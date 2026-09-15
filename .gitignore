@@ -1,0 +1,69 @@
+# ── Dataset y datos ──────────────────────────────────────────
+# Dataset Roboflow (imagenes/labels, no commitear — puede pesar GBs)
+data/processed/
+# Videos de prueba (archivos grandes)
+data/raw/*.mp4
+data/raw/*.avi
+data/raw/*.mov
+data/raw/*.mkv
+
+# ── Modelos YOLO ─────────────────────────────────────────────
+# Modelos entrenados y descargados automaticamente (archivos grandes)
+models/*.pt
+# Excepcion: permitir .gitkeep para que la carpeta sea rastreada
+!models/.gitkeep
+
+# ── Salidas de entrenamiento YOLO ────────────────────────────
+# Ultralytics genera esto al correr train.py (miles de archivos)
+runs/
+
+# ── Base de datos local ───────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Variables de entorno ──────────────────────────────────────
+.env
+!.env.example
+
+# ── Entornos virtuales ────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Testing ───────────────────────────────────────────────────
+.pytest_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+
+# ── Reportes generados ────────────────────────────────────────
+reports/*.pdf
+reports/*.xlsx
+reports/*.csv
+
+!reports/.gitkeep
+
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store

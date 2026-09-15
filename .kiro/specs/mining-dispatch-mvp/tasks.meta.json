@@ -1,0 +1,280 @@
+{
+  "pbtResults": {
+    "3.3 Escribir property test para round-trip de persistencia (Property 5)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789097189564
+    },
+    "3.4 Escribir property test para ordenamiento de `obtener_todos()` (Property 6)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789097193677
+    },
+    "5.2 Escribir property test para filtrado de clases (Property 2)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789097197078
+    },
+    "5.3 Escribir property test para filtrado por umbral de confianza (Property 3)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789097200183
+    },
+    "5.4 Escribir property test para estructura e invariantes del evento (Property 4)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789097203412
+    },
+    "8.4 Escribir property test para `GET /eventos` (Property 8)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789097206513
+    },
+    "8.5 Escribir property test para round-trip de consulta por ID (Property 9)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789097209527
+    }
+  },
+  "executionHistory": {
+    "1.1 Crear estructura de directorios y archivos base": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089756431
+      },
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089766336
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090129913
+      }
+    ],
+    "1.2 Crear `requirements.txt` con dependencias fijadas": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089757164
+      },
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089766943
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090130420
+      }
+    ],
+    "1.3 Crear `.env.example` con todas las variables de configuración": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089757363
+      },
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089767951
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090061920
+      }
+    ],
+    "1.4 Crear `README.md` mínimo con instrucciones de instalación y ejecución": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089757545
+      },
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089768303
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090062700
+      }
+    ],
+    "2.1 Implementar `src/config.py` con la clase `Settings`": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089757678
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090136796
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090236572
+      }
+    ],
+    "3.1 Implementar `src/database/models.py` con el ORM SQLAlchemy": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089757847
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090240319
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789092757000
+      }
+    ],
+    "3.2 Implementar `src/database/database.py` con engine, `init_db` y `RepositorioEventos`": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089757947
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789092767102
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789093594779
+      }
+    ],
+    "4. Checkpoint — base de datos": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758041
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789093598966
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789093615699
+      }
+    ],
+    "5.1 Implementar `src/ai/detector.py` con la clase `Detector`": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758133
+      },
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789093616377
+      }
+    ],
+    "6.1 Implementar función `open_video(video_path: str) -> cv2.VideoCapture` en `main.py`": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758233
+      }
+    ],
+    "6.2 Implementar función `calcular_timestamp(cap: cv2.VideoCapture, frame_number: int) -> str` en `main.py`": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758325
+      }
+    ],
+    "6.3 Implementar función `print_evento(evento: dict) -> None` en `main.py`": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758406
+      }
+    ],
+    "6.4 Implementar función `main()` en `main.py` integrando todos los componentes": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758501
+      }
+    ],
+    "7. Checkpoint — pipeline CLI": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758735
+      }
+    ],
+    "8.1 Implementar `src/api/schemas.py` con `EventoSchema`": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758814
+      }
+    ],
+    "8.2 Implementar `src/api/routers/eventos.py` con los tres endpoints": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089758918
+      }
+    ],
+    "8.3 Implementar `src/api/main.py` con la aplicación FastAPI": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089759002
+      }
+    ],
+    "9.1 Implementar `tests/conftest.py` con fixtures reutilizables": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089759091
+      }
+    ],
+    "10. Checkpoint final — suite completa": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089759173
+      }
+    ],
+    "11.1 Actualizar `README.md` con instrucciones completas": [
+      {
+        "executionId": "d2f2a005-53a3-4d57-bd02-4d6268a9a01c",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789089759250
+      }
+    ],
+    "1. Scaffolding del proyecto": [
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090130650
+      }
+    ],
+    "2. Configuración con pydantic-settings": [
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789090236826
+      }
+    ],
+    "3. Capa de base de datos": [
+      {
+        "executionId": "992f6774-4151-4dd3-b93f-8d0f5d2b1321",
+        "chatSessionId": "sess_113ae545-093f-4237-add8-2ec4986115d9",
+        "timestamp": 1789093595240
+      }
+    ]
+  }
+}
