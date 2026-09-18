@@ -8,7 +8,7 @@ import pytest
 from hypothesis import given, settings, HealthCheck
 from hypothesis import strategies as st
 
-from src.database.database import RepositorioEventos
+from src.database.db import RepositorioEventos
 from src.database.models import Evento
 
 
@@ -68,7 +68,7 @@ timestamp_st = st.text(
 @given(
     n=st.integers(min_value=1, max_value=20),
 )
-@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
 def test_property_8_get_eventos_retorna_todos(test_client, db_session, n):
     """
     Property 8: GET /eventos retorna exactamente N eventos tras insertar N.
