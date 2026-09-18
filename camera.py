@@ -16,20 +16,25 @@ import time
 import cv2
 
 from src.config import load_config
-from src.database.database import RepositorioEventos, get_session_factory, init_db
-from src.ai.detector import CLASE_MAP, Detector
+from src.database.db import RepositorioEventos, get_session, migrate
+from src.ai.detector import Detector
+from main import (
+    GestorPresencia,
+    COLORES,
+    COLOR_DEFAULT,
+    FRAMES_AUSENCIA,
+    dibujar_tracking,
+    calcular_timestamp,
+)
 
 # ── Rendimiento (ajusta segun tu CPU) ────────────────────────────────────────
-# INFERENCE_IMGSZ  256px / INFERENCE_SKIP 4  ->  ~12-18 FPS (recomendado i5)
-# INFERENCE_IMGSZ  160px / INFERENCE_SKIP 5  ->  ~20-30 FPS (basico)
-INFERENCE_IMGSZ = 256
-INFERENCE_SKIP  = 4
+# INFERENCE_IMGSZ  480px / INFERENCE_SKIP 2  ->  ~5-8 FPS   (recomendado)
+# INFERENCE_IMGSZ  320px / INFERENCE_SKIP 3  ->  ~10-15 FPS (buena calidad)
+# INFERENCE_IMGSZ  160px / INFERENCE_SKIP 4  ->  ~20-30 FPS (basico)
+INFERENCE_IMGSZ = 480
+INFERENCE_SKIP  = 2
 
-COLORES: dict[str, tuple[int, int, int]] = {
-    "camion": (0, 200, 255),
-    "pala":   (0, 255, 80),
-}
-COLOR_DEFAULT = (200, 200, 200)
+DISPLAY_WIDTH = 960
 
 
 def get_camera_source(config) -> str | int:
@@ -58,112 +63,94 @@ def open_camera(source: str | int) -> cv2.VideoCapture:
     return cap
 
 
-def dibujar_tracking(frame, detecciones: list[dict]) -> None:
-    """Dibuja bounding boxes con ID de tracking (in-place)."""
-    for det in detecciones:
-        tipo  = det["tipo_maquina"]
-        color = COLORES.get(tipo, COLOR_DEFAULT)
-        x1, y1, x2, y2 = map(int, det["bbox"])
-        tid   = det.get("track_id", "?")
-
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        label = f"ID:{tid} {tipo} {det['confianza']:.2f}"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-        cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
-        cv2.putText(frame, label, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
-
-
 def main() -> None:
     config = load_config()
 
-    init_db(config.db_path)
-    SessionFactory = get_session_factory(config.db_path)
-    session        = SessionFactory()
-    repo           = RepositorioEventos(session)
+    migrate()
+    with get_session() as session:
+        repo   = RepositorioEventos(session)
+        gestor = GestorPresencia(frames_ausencia=FRAMES_AUSENCIA)
 
-    detector = Detector(config.model_path, config.confidence_threshold)
-    detector.load_model()
+        detector = Detector(config.model_path, config.confidence_threshold)
+        detector.load_model()
 
-    source = get_camera_source(config)
-    cap    = open_camera(source)
+        source = get_camera_source(config)
+        cap    = open_camera(source)
+        fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-    print("[INFO] Tracking en tiempo real activo (ByteTrack)")
-    print("[INFO] Q/ESC = salir | ESPACIO = pausar")
+        print("[INFO] Tracking en tiempo real activo (ByteTrack)")
+        print(f"[INFO] Modo rendimiento: imgsz={INFERENCE_IMGSZ}px | skip={INFERENCE_SKIP} frames")
+        print("[INFO] Q/ESC = salir | ESPACIO = pausar")
 
-    frame_count = 0
-    event_count = 0
-    pausado     = False
-    t_inicio    = time.time()
-    ultimas_detecciones: list[dict] = []
+        frame_count = 0
+        event_count = 0
+        pausado     = False
+        t_inicio    = time.time()
 
-    try:
-        while True:
-            if not pausado:
-                ret, frame = cap.read()
-                if not ret:
-                    print("[WARN] Frame perdido -- reintentando...")
-                    time.sleep(0.1)
-                    continue
+        try:
+            while True:
+                if not pausado:
+                    ret, frame = cap.read()
+                    if not ret:
+                        print("[WARN] Frame perdido -- reintentando...")
+                        time.sleep(0.1)
+                        continue
 
-                frame_vis = frame.copy()
+                    # Usa calcular_timestamp igual que main.py para formato consistente
+                    timestamp = calcular_timestamp(fps, frame_count)
+                    frame_vis = frame.copy()
 
-                try:
-                    # Inferencia + tracking cada INFERENCE_SKIP frames
-                    if frame_count % INFERENCE_SKIP == 0:
-                        ts = time.strftime("%H:%M:%S")
-                        ultimas_detecciones = detector.track_frame(
-                            frame, frame_count, ts, imgsz=INFERENCE_IMGSZ
-                        )
-                        # Guardar en DB cada INFERENCE_SKIP * 3 frames
-                        if frame_count % (INFERENCE_SKIP * 3) == 0:
-                            for det in ultimas_detecciones:
-                                repo.insertar({
-                                    "tipo_maquina":     det["tipo_maquina"],
-                                    "clase_id":         det["clase_id"],
-                                    "confianza":        det["confianza"],
-                                    "numero_fotograma": frame_count,
-                                    "timestamp":        det["timestamp"],
-                                })
-                                print(
-                                    f"[EVENTO] frame={frame_count} "
-                                    f"| id={det['track_id']} "
-                                    f"| maquina={det['tipo_maquina']} "
-                                    f"| conf={det['confianza']:.2f}"
-                                )
+                    try:
+                        if frame_count % INFERENCE_SKIP == 0:
+                            detecciones = detector.track_frame(
+                                frame, frame_count, timestamp, imgsz=INFERENCE_IMGSZ
+                            )
+                            mensajes = gestor.procesar(detecciones, frame_count, repo)
+                            for msg in mensajes:
+                                print(msg)
                                 event_count += 1
 
-                    # Siempre dibujar las ultimas detecciones conocidas
-                    dibujar_tracking(frame_vis, ultimas_detecciones)
+                        dibujar_tracking(frame_vis, gestor.activos_para_dibujar())
 
-                except Exception as e:
-                    print(f"[ERROR] frame={frame_count} | {e}")
+                    except Exception as e:
+                        print(f"[ERROR] frame={frame_count} | {e}")
 
-                # HUD
-                elapsed  = time.time() - t_inicio
-                fps_real = frame_count / elapsed if elapsed > 0 else 0
-                hud = (f"CAMARA EN VIVO | frame {frame_count} "
-                       f"| eventos: {event_count} | {fps_real:.1f} fps")
-                cv2.putText(frame_vis, hud, (10, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2, cv2.LINE_AA)
-                cv2.putText(frame_vis, hud, (10, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 1, cv2.LINE_AA)
+                    # HUD — texto con sombra
+                    elapsed  = time.time() - t_inicio
+                    fps_real = frame_count / elapsed if elapsed > 0 else 0
+                    hud = (
+                        f"CAMARA EN VIVO | {timestamp} | frame {frame_count} "
+                        f"| activos: {gestor.n_activos} | eventos: {event_count} "
+                        f"| {fps_real:.1f} FPS"
+                    )
+                    cv2.putText(frame_vis, hud, (10, 28),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(frame_vis, hud, (10, 28),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
 
-                cv2.imshow("Mining Dispatch -- Camara Tracking  [Q=salir  SPACE=pausar]", frame_vis)
-                frame_count += 1
+                    if DISPLAY_WIDTH > 0:
+                        h_vis, w_vis = frame_vis.shape[:2]
+                        if w_vis > DISPLAY_WIDTH:
+                            scale     = DISPLAY_WIDTH / w_vis
+                            frame_vis = cv2.resize(
+                                frame_vis, (DISPLAY_WIDTH, int(h_vis * scale))
+                            )
 
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
-                print("[INFO] Salida por usuario.")
-                break
-            elif key == ord(" "):
-                pausado = not pausado
-                print(f"[INFO] {'PAUSADO' if pausado else 'REANUDADO'}")
+                    cv2.imshow("Mining Dispatch -- Camara Tracking  [Q=salir  SPACE=pausar]", frame_vis)
+                    frame_count += 1
 
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        session.close()
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    print("[INFO] Salida por usuario.")
+                    break
+                elif key == ord(" "):
+                    pausado = not pausado
+                    print(f"[INFO] {'PAUSADO' if pausado else 'REANUDADO'}")
+
+        finally:
+            gestor.cerrar(repo)
+            cap.release()
+            cv2.destroyAllWindows()
 
     duracion = time.time() - t_inicio
     print(
