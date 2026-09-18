@@ -16,8 +16,8 @@ import time
 import cv2
 
 from src.config import load_config
-from src.database.database import RepositorioEventos, get_session_factory, init_db
-from src.ai.detector import CLASE_MAP, Detector
+from src.database.db import RepositorioEventos, get_session, migrate
+from src.ai.detector import Detector
 
 COLORES: dict[str, tuple[int, int, int]] = {
     "camion": (0, 200, 255),   # naranja
@@ -30,11 +30,11 @@ FRAMES_AUSENCIA = 30
 
 # ── Rendimiento ───────────────────────────────────────────────────────────────
 # Ajusta segun tu CPU (i5-7200U sin GPU):
-#   TRACK_IMGSZ=256, TRACK_SKIP=2  ->  ~8-12 FPS  (calidad alta)
-#   TRACK_IMGSZ=160, TRACK_SKIP=2  ->  ~12-15 FPS (calidad media)
-#   TRACK_IMGSZ=160, TRACK_SKIP=3  ->  ~18-22 FPS (calidad media-baja)
-#   TRACK_IMGSZ=128, TRACK_SKIP=3  ->  ~25-30 FPS (calidad basica)
-TRACK_IMGSZ   = 160   # tamano de imagen para inferencia YOLO (px)
+#   TRACK_IMGSZ=640, TRACK_SKIP=2  ->  ~3-5 FPS   (maxima calidad, objetos pequenos)
+#   TRACK_IMGSZ=480, TRACK_SKIP=2  ->  ~5-8 FPS   (buena calidad, recomendado)
+#   TRACK_IMGSZ=320, TRACK_SKIP=2  ->  ~8-12 FPS  (calidad media)
+#   TRACK_IMGSZ=160, TRACK_SKIP=2  ->  ~12-15 FPS (basico, pierde objetos pequenos)
+TRACK_IMGSZ   = 480   # tamano de imagen para inferencia YOLO (px)
 TRACK_SKIP    = 2     # ejecutar tracking 1 de cada N frames
 DISPLAY_WIDTH = 960   # ancho maximo de la ventana en pixeles (0 = sin redimensionar)
 
@@ -46,7 +46,7 @@ class GestorPresencia:
     """
 
     def __init__(self, frames_ausencia: int = FRAMES_AUSENCIA) -> None:
-        self.frames_ausencia      = frames_ausencia
+        self.frames_ausencia = frames_ausencia
         self._activos: dict[int, dict] = {}
         self._cache_detecciones: list[dict] = []
 
@@ -71,12 +71,13 @@ class GestorPresencia:
 
             if tid not in self._activos:
                 self._activos[tid] = {
-                    "tipo_maquina":       tipo,
-                    "clase_id":           det["clase_id"],
-                    "frame_aparicion":    frame_count,
+                    "tipo_maquina":        tipo,
+                    "clase_id":            det["clase_id"],
+                    "frame_aparicion":     frame_count,
                     "timestamp_aparicion": det["timestamp"],
-                    "ultimo_frame_visto": frame_count,
-                    "confianza_max":      det["confianza"],
+                    "ultimo_frame_visto":  frame_count,
+                    "ultimo_timestamp":    det["timestamp"],
+                    "confianza_max":       det["confianza"],
                 }
                 repo.insertar({
                     "tipo_maquina":      tipo,
@@ -93,6 +94,7 @@ class GestorPresencia:
             else:
                 estado = self._activos[tid]
                 estado["ultimo_frame_visto"] = frame_count
+                estado["ultimo_timestamp"]   = det["timestamp"]
                 if det["confianza"] > estado["confianza_max"]:
                     estado["confianza_max"] = det["confianza"]
 
@@ -111,7 +113,7 @@ class GestorPresencia:
                 "clase_id":          estado["clase_id"],
                 "confianza":         estado["confianza_max"],
                 "numero_fotograma":  estado["ultimo_frame_visto"],
-                "timestamp":         estado["timestamp_aparicion"],
+                "timestamp":         estado["ultimo_timestamp"],   # timestamp del ultimo frame visto
                 "tipo_evento_ciclo": "desaparicion",
             })
             mensajes.append(
@@ -122,12 +124,18 @@ class GestorPresencia:
 
         return mensajes
 
-    def _activos_para_dibujar(self) -> list[dict]:
-        """Retorna las ultimas detecciones con bbox para visualizacion."""
-        return self._cache_detecciones
+    def activos_para_dibujar(self) -> list[dict]:
+        """Retorna solo las detecciones de IDs actualmente activos."""
+        ids_activos = set(self._activos.keys())
+        return [d for d in self._cache_detecciones if d["track_id"] in ids_activos]
 
-    def cerrar(self, frame_count: int, repo: RepositorioEventos) -> None:
-        """Registra desaparicion de todos los IDs activos al finalizar."""
+    @property
+    def n_activos(self) -> int:
+        """Numero de maquinas actualmente en escena."""
+        return len(self._activos)
+
+    def cerrar(self, repo: RepositorioEventos) -> None:
+        """Registra desaparicion de todos los IDs activos al finalizar el video."""
         for tid, estado in self._activos.items():
             frames_presencia = estado["ultimo_frame_visto"] - estado["frame_aparicion"]
             repo.insertar({
@@ -135,7 +143,7 @@ class GestorPresencia:
                 "clase_id":          estado["clase_id"],
                 "confianza":         estado["confianza_max"],
                 "numero_fotograma":  estado["ultimo_frame_visto"],
-                "timestamp":         estado["timestamp_aparicion"],
+                "timestamp":         estado["ultimo_timestamp"],   # timestamp correcto del ultimo frame
                 "tipo_evento_ciclo": "desaparicion",
             })
             print(
@@ -170,7 +178,7 @@ def calcular_timestamp(fps: float, frame_number: int) -> str:
 
 
 def print_evento(det: dict) -> None:
-    """Mantiene compatibilidad con tests existentes."""
+    """Imprime un evento de deteccion con formato estandar. Usado en tests."""
     tid = det.get("track_id", "?")
     print(
         f"[EVENTO] fotograma={det['numero_fotograma']} "
@@ -183,7 +191,9 @@ def print_evento(det: dict) -> None:
 
 
 def dibujar_tracking(frame, detecciones: list[dict]) -> None:
-    """Dibuja bounding boxes con ID de tracking sobre el frame (in-place)."""
+    """Dibuja bounding boxes con ID de tracking sobre el frame (in-place).
+    Texto con sombra: primera pasada blanca (grosor 2), segunda negra (grosor 1).
+    """
     for det in detecciones:
         tipo  = det["tipo_maquina"]
         color = COLORES.get(tipo, COLOR_DEFAULT)
@@ -201,93 +211,87 @@ def dibujar_tracking(frame, detecciones: list[dict]) -> None:
 def main() -> None:
     config = load_config()
 
-    init_db(config.db_path)
-    SessionFactory = get_session_factory(config.db_path)
-    session        = SessionFactory()
-    repo           = RepositorioEventos(session)
+    migrate()
+    with get_session() as session:
+        repo    = RepositorioEventos(session)
+        gestor  = GestorPresencia(frames_ausencia=FRAMES_AUSENCIA)
 
-    detector = Detector(config.model_path, config.confidence_threshold)
-    detector.load_model()
+        detector = Detector(config.model_path, config.confidence_threshold)
+        detector.load_model()
 
-    cap   = open_video(config.video_path)
-    fps   = cap.get(cv2.CAP_PROP_FPS)
-    delay = max(1, int(1000 / fps) if fps > 0 else 30)
+        cap   = open_video(config.video_path)
+        fps   = cap.get(cv2.CAP_PROP_FPS)
+        delay = max(1, int(1000 / fps) if fps > 0 else 30)
 
-    gestor      = GestorPresencia(frames_ausencia=FRAMES_AUSENCIA)
-    t_inicio    = time.time()
-    frame_count = 0
-    event_count = 0
-    pausado     = False
+        t_inicio    = time.time()
+        frame_count = 0
+        event_count = 0
+        pausado     = False
 
-    print("[INFO] Tracking activo (ByteTrack) -- Q=salir | ESPACIO=pausar")
-    print(f"[INFO] Modo rendimiento: imgsz={TRACK_IMGSZ}px | skip={TRACK_SKIP} frames")
+        print("[INFO] Tracking activo (ByteTrack) -- Q=salir | ESPACIO=pausar")
+        print(f"[INFO] Modo rendimiento: imgsz={TRACK_IMGSZ}px | skip={TRACK_SKIP} frames")
 
-    try:
-        while True:
-            if not pausado:
-                ret, frame = cap.read()
-                if not ret:
+        try:
+            while True:
+                if not pausado:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    timestamp = calcular_timestamp(fps, frame_count)
+                    frame_vis = frame.copy()
+
+                    try:
+                        if frame_count % TRACK_SKIP == 0:
+                            detecciones = detector.track_frame(
+                                frame, frame_count, timestamp, imgsz=TRACK_IMGSZ
+                            )
+                            mensajes = gestor.procesar(detecciones, frame_count, repo)
+                            for msg in mensajes:
+                                print(msg)
+                                event_count += 1
+
+                        dibujar_tracking(frame_vis, gestor.activos_para_dibujar())
+
+                    except Exception as e:
+                        print(f"[ERROR] frame={frame_count} | {e}")
+
+                    # HUD — texto con sombra (blanco grueso + negro fino)
+                    elapsed  = time.time() - t_inicio
+                    fps_real = frame_count / elapsed if elapsed > 0 else 0
+                    hud = (
+                        f"{timestamp} | frame {frame_count} "
+                        f"| activos: {gestor.n_activos} | eventos: {event_count} "
+                        f"| {fps_real:.1f} FPS"
+                    )
+                    cv2.putText(frame_vis, hud, (10, 28),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(frame_vis, hud, (10, 28),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+
+                    if DISPLAY_WIDTH > 0:
+                        h_vis, w_vis = frame_vis.shape[:2]
+                        if w_vis > DISPLAY_WIDTH:
+                            scale     = DISPLAY_WIDTH / w_vis
+                            frame_vis = cv2.resize(
+                                frame_vis, (DISPLAY_WIDTH, int(h_vis * scale))
+                            )
+
+                    cv2.imshow("Mining Dispatch -- Tracking YOLO26  [Q=salir  SPACE=pausar]", frame_vis)
+                    frame_count += 1
+
+                key = cv2.waitKey(delay) & 0xFF
+                if key in (ord("q"), 27):
+                    print("[INFO] Salida por usuario.")
                     break
+                elif key == ord(" "):
+                    pausado = not pausado
+                    print(f"[INFO] {'PAUSADO' if pausado else 'REANUDADO'}")
 
-                timestamp = calcular_timestamp(fps, frame_count)
-                frame_vis = frame.copy()
-
-                try:
-                    # Tracking solo cada TRACK_SKIP frames
-                    if frame_count % TRACK_SKIP == 0:
-                        detecciones = detector.track_frame(
-                            frame, frame_count, timestamp, imgsz=TRACK_IMGSZ
-                        )
-                        mensajes = gestor.procesar(detecciones, frame_count, repo)
-                        for msg in mensajes:
-                            print(msg)
-                            event_count += 1
-
-                    # Siempre dibujar las ultimas detecciones conocidas
-                    dibujar_tracking(frame_vis, gestor._activos_para_dibujar())
-
-                except Exception as e:
-                    print(f"[ERROR] frame={frame_count} | {e}")
-
-                # HUD con FPS real
-                elapsed  = time.time() - t_inicio
-                fps_real = frame_count / elapsed if elapsed > 0 else 0
-                n_activos = len(gestor._activos)
-                hud = (
-                    f"{timestamp} | frame {frame_count} "
-                    f"| activos: {n_activos} | eventos: {event_count} "
-                    f"| {fps_real:.1f} FPS"
-                )
-                cv2.putText(frame_vis, hud, (10, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
-                cv2.putText(frame_vis, hud, (10, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
-
-                # Redimensionar ventana si el video es mas ancho que DISPLAY_WIDTH
-                if DISPLAY_WIDTH > 0:
-                    h_vis, w_vis = frame_vis.shape[:2]
-                    if w_vis > DISPLAY_WIDTH:
-                        scale     = DISPLAY_WIDTH / w_vis
-                        frame_vis = cv2.resize(
-                            frame_vis, (DISPLAY_WIDTH, int(h_vis * scale))
-                        )
-
-                cv2.imshow("Mining Dispatch -- Tracking YOLO26  [Q=salir  SPACE=pausar]", frame_vis)
-                frame_count += 1
-
-            key = cv2.waitKey(delay) & 0xFF
-            if key in (ord("q"), 27):
-                print("[INFO] Salida por usuario.")
-                break
-            elif key == ord(" "):
-                pausado = not pausado
-                print(f"[INFO] {'PAUSADO' if pausado else 'REANUDADO'}")
-
-    finally:
-        gestor.cerrar(frame_count, repo)
-        cap.release()
-        cv2.destroyAllWindows()
-        session.close()
+        finally:
+            gestor.cerrar(repo)
+            cap.release()
+            cv2.destroyAllWindows()
 
     duracion = time.time() - t_inicio
     print(
