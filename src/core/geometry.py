@@ -12,13 +12,15 @@ Conceptos:
                determinar si una maquina esta dentro de una zona
 
 Uso basico:
-    zona_carga = Zona("carga", [(100,100), (400,100), (400,300), (100,300)])
+    zona_carga = Zona("carga", "carga", [(100,100), (400,100), (400,300), (100,300)])
     bbox = BBox(x1=150, y1=120, x2=250, y2=250)
     if zona_carga.contiene(bbox.centroide):
         print("Camion en zona de carga")
 """
 from __future__ import annotations
 
+import cv2
+import numpy as np
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -186,17 +188,19 @@ class EstadoMaquina:
     Seguimiento del estado de una maquina individual entre frames.
 
     Attributes:
-        maquina_id:    identificador unico (ej: "camion_0", "pala_1")
-        tipo_maquina:  "camion" | "pala"
-        zona_actual:   nombre de la zona donde esta ahora (o None)
-        zona_anterior: nombre de la zona donde estaba antes (o None)
-        frames_en_zona: cuantos frames consecutivos lleva en la zona actual
+        maquina_id:        identificador unico (ej: "camion_0", "pala_1")
+        tipo_maquina:      "camion" | "pala"
+        zona_actual:       nombre de la zona donde esta ahora (o None)
+        zona_anterior:     nombre de la zona donde estaba antes (o None)
+        frames_en_zona:    frames consecutivos en la zona candidata actual
+        zona_candidata:    zona que se esta intentando confirmar (puede diferir de zona_actual)
     """
-    maquina_id:     str
-    tipo_maquina:   str
-    zona_actual:    str | None = None
-    zona_anterior:  str | None = None
-    frames_en_zona: int = 0
+    maquina_id:      str
+    tipo_maquina:    str
+    zona_actual:     str | None = None
+    zona_anterior:   str | None = None
+    frames_en_zona:  int = 0
+    zona_candidata:  str | None = None  # zona que se esta acumulando para confirmar
 
 
 @dataclass
@@ -245,8 +249,8 @@ class GestorGeofencing:
             print(evento.tipo_evento, evento.zona_nombre)
     """
 
-    # Minimo de frames consecutivos dentro de una zona para confirmar entrada
-    # Evita falsos positivos por detecciones inestables
+    # Minimo de frames consecutivos dentro de una zona para confirmar entrada.
+    # Evita falsos positivos por detecciones inestables del tracker.
     FRAMES_MINIMOS_CONFIRMACION = 3
 
     def __init__(self) -> None:
@@ -260,6 +264,10 @@ class GestorGeofencing:
     def eliminar_zona(self, nombre: str) -> None:
         """Elimina una zona virtual por nombre."""
         self._zonas.pop(nombre, None)
+
+    def limpiar_maquina(self, maquina_id: str) -> None:
+        """Elimina el estado de una maquina (llamar cuando desaparece del tracking)."""
+        self._estados.pop(maquina_id, None)
 
     @property
     def zonas(self) -> dict[str, Zona]:
@@ -285,6 +293,10 @@ class GestorGeofencing:
         Procesa la posicion de una maquina en un frame y genera
         EventoCiclo si entra o sale de alguna zona.
 
+        El mecanismo de confirmacion requiere FRAMES_MINIMOS_CONFIRMACION frames
+        consecutivos dentro de una zona antes de emitir un evento de entrada.
+        Esto evita falsos positivos por detecciones inestables.
+
         Args:
             maquina_id:   identificador unico de la maquina en este frame.
             tipo_maquina: "camion" | "pala".
@@ -305,19 +317,26 @@ class GestorGeofencing:
             )
         estado = self._estados[maquina_id]
 
-        # Zona donde esta ahora el centroide del bbox
         zona_detectada = self._zona_para_bbox(bbox)
 
         if zona_detectada == estado.zona_actual:
-            # Sigue en la misma zona — incrementar contador
+            # Sigue en la zona confirmada — solo acumular
             estado.frames_en_zona += 1
+            estado.zona_candidata = None  # no hay candidata pendiente
         else:
-            # Cambio de zona detectado
+            # Detectada una zona distinta a la actual (o fuera de todas)
             if zona_detectada is not None:
-                estado.frames_en_zona += 1
-                # Confirmar entrada solo si lleva suficientes frames
+                if zona_detectada != estado.zona_candidata:
+                    # Nueva candidata: reiniciar contador desde 1
+                    estado.zona_candidata = zona_detectada
+                    estado.frames_en_zona = 1
+                else:
+                    # Misma candidata que el frame anterior: acumular
+                    estado.frames_en_zona += 1
+
+                # Confirmar entrada solo tras suficientes frames consecutivos
                 if estado.frames_en_zona >= self.FRAMES_MINIMOS_CONFIRMACION:
-                    # Evento de salida de zona anterior (si habia)
+                    # Emitir salida de la zona anterior (si habia una confirmada)
                     if estado.zona_actual is not None:
                         tipo_salida = f"salida_{self._zonas[estado.zona_actual].tipo}"
                         eventos.append(EventoCiclo(
@@ -329,7 +348,7 @@ class GestorGeofencing:
                             frame_number=frame_number,
                             bbox=bbox,
                         ))
-                    # Evento de entrada a nueva zona
+                    # Emitir entrada a la nueva zona confirmada
                     tipo_entrada = f"entrada_{self._zonas[zona_detectada].tipo}"
                     eventos.append(EventoCiclo(
                         maquina_id=maquina_id,
@@ -340,8 +359,9 @@ class GestorGeofencing:
                         frame_number=frame_number,
                         bbox=bbox,
                     ))
-                    estado.zona_anterior = estado.zona_actual
-                    estado.zona_actual   = zona_detectada
+                    estado.zona_anterior  = estado.zona_actual
+                    estado.zona_actual    = zona_detectada
+                    estado.zona_candidata = None
             else:
                 # Salio de todas las zonas
                 if estado.zona_actual is not None:
@@ -357,6 +377,7 @@ class GestorGeofencing:
                     ))
                 estado.zona_anterior  = estado.zona_actual
                 estado.zona_actual    = None
+                estado.zona_candidata = None
                 estado.frames_en_zona = 0
 
         return eventos
@@ -372,20 +393,17 @@ def dibujar_zonas(frame, gestor: GestorGeofencing) -> None:
         frame:  imagen BGR de OpenCV (numpy array).
         gestor: instancia de GestorGeofencing con las zonas registradas.
     """
-    import cv2
-    import numpy as np
-
     for zona in gestor.zonas.values():
         if not zona.activa:
             continue
         pts = np.array(zona.vertices, dtype=np.int32)
-        # Relleno semitransparente
+        # Relleno semitransparente (efecto de sombra sobre el frame)
         overlay = frame.copy()
         cv2.fillPoly(overlay, [pts], zona.color_bgr)
         cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
         # Borde
         cv2.polylines(frame, [pts], isClosed=True, color=zona.color_bgr, thickness=2)
-        # Etiqueta
+        # Etiqueta centrada en el poligono
         cx = int(sum(v[0] for v in zona.vertices) / len(zona.vertices))
         cy = int(sum(v[1] for v in zona.vertices) / len(zona.vertices))
         cv2.putText(frame, f"{zona.nombre} [{zona.tipo}]",
