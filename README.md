@@ -1,8 +1,8 @@
-# Mining Dispatch MVP — Módulo 1: Detección de Maquinaria
+# Mining Dispatch MVP — Detección de Maquinaria Minera
 
-Prueba de concepto para detección de maquinaria minera (camiones y palas) usando YOLO26 + OpenCV, con persistencia en SQLite y API REST básica con FastAPI.
+Sistema de detección y tracking de maquinaria minera (camiones y palas) usando YOLO26 + ByteTrack. Registra eventos de aparición y desaparición de cada máquina en una base de datos y expone los datos vía API REST.
 
-Funciona **exclusivamente en modo consola/terminal** — sin interfaz gráfica.
+Funciona con **video grabado** (`main.py`) y **cámara en tiempo real** (`camera.py`).
 
 ---
 
@@ -38,68 +38,141 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Editar `.env` y completar los valores:
+Editar `.env` con los valores del entorno:
 
 | Variable | Descripción | Requerida |
 |---|---|---|
-| `VIDEO_PATH` | Ruta al video de prueba (.mp4, .avi, .mov) | ✅ |
+| `VIDEO_PATH` | Ruta al video (.mp4, .avi, .mov) | ✅ |
 | `MODEL_PATH` | Ruta al modelo YOLO26 (.pt) | ✅ |
-| `DB_PATH` | Ruta al archivo SQLite de eventos | ✅ |
-| `CONFIDENCE_THRESHOLD` | Umbral de confianza (default: 0.5) | ❌ |
-| `API_HOST` | Host de la API (default: 127.0.0.1) | ❌ |
-| `API_PORT` | Puerto de la API (default: 8000) | ❌ |
+| `DB_URL` | URL de conexión a la base de datos | ✅ |
+| `CAMERA_SOURCE` | Fuente de cámara para `camera.py` | ❌ |
+| `CONFIDENCE_THRESHOLD` | Umbral de confianza (default: `0.5`) | ❌ |
+| `API_HOST` | Host de la API (default: `127.0.0.1`) | ❌ |
+| `API_PORT` | Puerto de la API (default: `8000`) | ❌ |
 
-**Modelo placeholder:** La primera vez que ejecutes con `MODEL_PATH=models/yolo26n.pt`, Ultralytics descarga el modelo automáticamente.
+### Formatos de DB_URL
+
+```env
+# SQLite (local, sin servidor)
+DB_URL=sqlite:///data/eventos.db
+
+# MySQL
+DB_URL=mysql+pymysql://usuario:clave@localhost:3306/mining_dispatch
+
+# PostgreSQL
+DB_URL=postgresql+psycopg2://usuario:clave@localhost:5432/mining_dispatch
+```
+
+### Fuentes de cámara (CAMERA_SOURCE)
+
+```env
+CAMERA_SOURCE=0                              # webcam local
+CAMERA_SOURCE=http://192.168.1.X:4747/video  # DroidCam (Android)
+CAMERA_SOURCE=rtsp://usuario:clave@ip/stream # cámara RTSP industrial
+```
+
+**Modelo base:** Con `MODEL_PATH=models/yolo26n.pt`, Ultralytics descarga el modelo automáticamente la primera vez.  
+**Modelo entrenado:** Usar `MODEL_PATH=models/best.pt` tras ejecutar `python train.py`.
+
+---
+
+## Migraciones
+
+Las tablas se crean automáticamente al arrancar `main.py` o `camera.py`. Para entornos de producción o al cambiar modelos, usar Alembic:
+
+```bash
+# Aplicar migraciones pendientes
+python -m alembic upgrade head
+
+# Crear una nueva migración tras cambiar un modelo ORM
+python -m alembic revision --autogenerate -m "descripcion_del_cambio"
+python -m alembic upgrade head
+```
 
 ---
 
 ## Uso
 
-### 1. Procesar un video (pipeline principal)
+### 1. Procesar video grabado
 
 ```bash
 python main.py
 ```
 
-Salida esperada en consola:
+Controles durante la reproducción: `Q` / `ESC` para salir | `ESPACIO` para pausar.
+
+Salida esperada:
+
 ```
-[INFO] Video cargado: 1920x1080 @ 30.0fps | 450 fotogramas
-[INFO] Modelo YOLO26n cargado en cpu
-[EVENTO] fotograma=12 | timestamp=00:00:00.400 | maquina=camion | clase=truck | confianza=0.87
-[EVENTO] fotograma=34 | timestamp=00:00:01.133 | maquina=pala | clase=excavator | confianza=0.72
-...
-[RESUMEN] fotogramas_procesados=450 | eventos_registrados=23 | duracion_segundos=18.45
+[INFO] Modelo best.pt cargado en cpu
+[INFO] Video cargado: 848x478 @ 30.0fps | 1802 fotogramas
+[INFO] Tracking activo (ByteTrack) -- Q=salir | ESPACIO=pausar
+[APARICION]    id=1 | maquina=camion | clase=dump_truck | frame=0   | ts=00:00:00.000 | conf=0.91
+[APARICION]    id=2 | maquina=pala   | clase=excavator  | frame=0   | ts=00:00:00.000 | conf=0.81
+[DESAPARICION] id=1 | maquina=camion | frames_en_escena=290 | aparecio=00:00:00.000
+[RESUMEN] fotogramas_procesados=1802 | eventos_registrados=12 | duracion_segundos=62.3
 ```
 
-### 2. Consultar eventos via API (proceso separado)
+### 2. Cámara en tiempo real
+
+```bash
+python camera.py
+```
+
+Mismos controles que `main.py`. Usa `GestorPresencia` para registrar solo eventos de aparición/desaparición, igual que el pipeline de video.
+
+### 3. Entrenar el modelo
+
+```bash
+python train.py
+```
+
+- Si existe `models/train/weights/last.pt` de una sesión anterior, continúa automáticamente desde la última época (`resume=True`).
+- Al terminar, copia `best.pt` a `models/best.pt` listo para usar.
+- Para continuar entrenamiento en otro PC, copiar: `models/yolo26n.pt`, `models/train/weights/last.pt`, `models/train/args.yaml` y el dataset `data/processed/`.
+
+Parámetros editables en `train.py`:
+
+| Parámetro | Default | Descripción |
+|---|---|---|
+| `EPOCHS` | `50` | Total de épocas |
+| `BATCH_SIZE` | `8` | Bajar a `4` si hay error de memoria |
+| `IMG_SIZE` | `640` | Tamaño de imagen para entrenamiento |
+
+### 4. API REST
 
 ```bash
 uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Endpoints disponibles:
-- `GET http://127.0.0.1:8000/health` — verificar que la API está activa
-- `GET http://127.0.0.1:8000/eventos` — listar todos los eventos detectados
-- `GET http://127.0.0.1:8000/eventos/{id}` — obtener un evento por ID
-- `GET http://127.0.0.1:8000/docs` — documentación interactiva (Swagger UI)
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `GET` | `/health` | Verifica que la API está activa |
+| `GET` | `/eventos` | Lista todos los eventos registrados |
+| `GET` | `/eventos/{id}` | Obtiene un evento por ID |
+| `GET` | `/docs` | Documentación interactiva (Swagger UI) |
 
 ---
 
 ## Dataset (Roboflow)
 
-El dataset de entrenamiento se descarga manualmente desde [Roboflow](https://roboflow.com) y se coloca en `data/processed/`:
+El dataset se descarga desde [Roboflow Universe](https://universe.roboflow.com/traindata/equipment/dataset/4) y se coloca en:
 
 ```
 data/processed/
-└── <nombre-dataset>/
+└── equipment.v4-acid-.yolo26/
     ├── data.yaml
-    ├── train/images/
+    ├── train/images/   (~2500 imágenes)
     ├── train/labels/
     ├── valid/images/
     └── valid/labels/
 ```
 
-El MVP no requiere el dataset para funcionar — solo se usa para entrenar `best.pt`.
+Clases detectadas: `dump_truck`, `dump`, `concrete_mixer_truck`, `excavator` → mapeadas a `camion` y `pala` en el dominio del sistema.
+
+Para agregar más data de Roboflow manteniendo los labels consistentes, combinar los datasets dentro del mismo proyecto en Roboflow antes de exportar.
 
 ---
 
@@ -109,22 +182,56 @@ El MVP no requiere el dataset para funcionar — solo se usa para entrenar `best
 pytest tests/ -v
 ```
 
+La suite cubre: configuración, detector (unitarios + property-based), repositorio, API y pipeline. Usa SQLite en memoria — no requiere base de datos real.
+
+---
+
+## Ajuste de rendimiento
+
+Los parámetros de `main.py` y `camera.py` se pueden ajustar según el hardware:
+
+| `TRACK_IMGSZ` | `TRACK_SKIP` | FPS aprox. (CPU i5) | Calidad |
+|---|---|---|---|
+| `640` | `2` | 3–5 | Máxima, detecta objetos pequeños |
+| `480` | `2` | 5–8 | Buena (recomendado) |
+| `320` | `2` | 8–12 | Media |
+| `160` | `2` | 12–15 | Básica, pierde objetos pequeños |
+
+**IDs inestables:** Si los IDs de tracking cambian frecuentemente, aumentar `FRAMES_AUSENCIA` (default `30`) a `60` o reducir `TRACK_SKIP` a `1`. Esto mejora a medida que el modelo acumula más épocas de entrenamiento.
+
 ---
 
 ## Estructura del proyecto
 
 ```
-dispatch_videy/
-├── data/raw/          # Videos de prueba
-├── data/processed/    # Dataset Roboflow (no versionado)
-├── models/            # Modelos YOLO (.pt)
+IA-Dis/
+├── data/
+│   ├── raw/                      # Videos de prueba (no versionados)
+│   ├── processed/                # Dataset Roboflow (no versionado)
+│   └── eventos.db                # Base de datos SQLite (generada al ejecutar)
+├── migrations/                   # Migraciones Alembic
+│   └── versions/
+├── models/                       # Modelos YOLO (.pt)
+├── runs/                         # Checkpoints de entrenamiento (Ultralytics)
 ├── src/
-│   ├── config.py      # Configuración centralizada
-│   ├── ai/detector.py # Clase Detector (YOLO26)
-│   ├── database/      # ORM + SQLite
-│   └── api/           # FastAPI
-├── reports/           # Reportes generados
-├── tests/             # Suite de tests
-├── main.py            # Entry point CLI
+│   ├── config.py                 # Configuración centralizada (pydantic-settings)
+│   ├── ai/
+│   │   └── detector.py           # Detector + tracker (YOLO26 + ByteTrack)
+│   ├── core/
+│   │   └── geometry.py           # BBox, Zona, GestorGeofencing
+│   ├── database/
+│   │   ├── db.py                 # Engine, sesión, RepositorioEventos
+│   │   └── models.py             # ORM: Evento, ZonaDB, Ciclo, Turno
+│   └── api/
+│       ├── main.py               # App FastAPI + CORS
+│       ├── schemas.py            # Schemas Pydantic
+│       └── routers/
+│           └── eventos.py        # Endpoints REST
+├── tests/                        # Suite de tests (pytest + hypothesis)
+├── reports/                      # Reportes generados
+├── main.py                       # Pipeline: video grabado
+├── camera.py                     # Pipeline: cámara en tiempo real
+├── train.py                      # Entrenamiento YOLO26
+├── alembic.ini                   # Configuración Alembic
 └── requirements.txt
 ```
