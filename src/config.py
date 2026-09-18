@@ -16,7 +16,10 @@ class Settings(BaseSettings):
     Variables obligatorias:
       - VIDEO_PATH:  ruta al video de prueba local
       - MODEL_PATH:  ruta al modelo YOLO26 (.pt)
-      - DB_PATH:     ruta al archivo SQLite de eventos
+      - DB_URL:      URL de conexión a la base de datos
+                     SQLite:     sqlite:///data/eventos.db
+                     MySQL:      mysql+pymysql://user:pass@host:3306/db
+                     PostgreSQL: postgresql+psycopg2://user:pass@host:5432/db
 
     Variables opcionales:
       - CONFIDENCE_THRESHOLD: umbral de confianza (default: 0.5)
@@ -34,7 +37,7 @@ class Settings(BaseSettings):
     # Obligatorias
     video_path: str
     model_path: str
-    db_path: str
+    db_url: str
 
     # Opcionales
     confidence_threshold: float = 0.5
