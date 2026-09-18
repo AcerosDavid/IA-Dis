@@ -19,6 +19,9 @@ CLASE_MAP: dict[str, str] = {
     "truck":                "camion",
 }
 
+# ID centinela cuando ByteTrack no ha asignado IDs aun
+_TRACK_ID_PENDIENTE = -1
+
 
 class Detector:
     """
@@ -76,6 +79,9 @@ class Detector:
         Ejecuta inferencia + ByteTrack sobre un fotograma.
         Asigna un ID persistente a cada maquina mientras permanece en escena.
 
+        Si ByteTrack aun no ha asignado IDs (primeros frames), las detecciones
+        sin ID se omiten para evitar colisiones silenciosas entre objetos distintos.
+
         Args:
             frame:        imagen BGR (numpy array OpenCV).
             frame_number: indice del fotograma (>= 0).
@@ -86,7 +92,7 @@ class Detector:
             Lista de dicts:
             {
                 "maquina_id":       str,   # "camion_4", "pala_7" (ID ByteTrack)
-                "track_id":         int,   # ID numerico ByteTrack
+                "track_id":         int,   # ID numerico ByteTrack (>= 0)
                 "tipo_maquina":     str,   # "camion" | "pala"
                 "clase_id":         str,   # nombre clase YOLO original
                 "confianza":        float,
@@ -100,7 +106,7 @@ class Detector:
 
         resultados = self.model.track(
             frame,
-            persist=True,      # mantiene IDs entre frames
+            persist=True,   # mantiene IDs entre frames
             verbose=False,
             imgsz=imgsz,
             conf=self.confidence_threshold,
@@ -113,23 +119,24 @@ class Detector:
                 continue
 
             boxes = resultado.boxes
-            # Si el tracker aun no asigno IDs, boxes.id puede ser None
-            ids = boxes.id  # tensor de IDs o None
+            ids   = boxes.id  # tensor de IDs o None
+
+            # Si el tracker aun no asigno IDs, omitir este frame completo
+            # para evitar que varios objetos compartan track_id=0
+            if ids is None:
+                continue
 
             for i, box in enumerate(boxes):
                 clase_nombre = resultado.names[int(box.cls)]
-                confianza    = float(box.conf)
 
                 if clase_nombre not in CLASE_MAP:
                     continue
-                if confianza < self.confidence_threshold:
-                    continue
 
-                tipo     = CLASE_MAP[clase_nombre]
-                track_id = int(ids[i]) if ids is not None else 0
+                tipo       = CLASE_MAP[clase_nombre]
+                track_id   = int(ids[i])
                 maquina_id = f"{tipo}_{track_id}"
-
-                xyxy = box.xyxy[0].tolist()
+                confianza  = float(box.conf)
+                xyxy       = box.xyxy[0].tolist()
 
                 detecciones.append({
                     "maquina_id":       maquina_id,
@@ -153,11 +160,14 @@ class Detector:
         """
         Inferencia simple sin tracking (modo legacy, sin IDs).
         Mantiene compatibilidad con los tests existentes.
+
+        Retorna dicts con campos: tipo_maquina, clase_id, confianza,
+        numero_fotograma, timestamp. No incluye bbox ni track_id.
         """
         if self.model is None:
             raise RuntimeError("Modelo no cargado. Llama load_model() primero.")
 
-        resultados = self.model(frame, verbose=False)
+        resultados = self.model(frame, verbose=False, conf=self.confidence_threshold)
         eventos: list[dict] = []
 
         for resultado in resultados:
@@ -169,6 +179,7 @@ class Detector:
 
                 if clase_nombre not in CLASE_MAP:
                     continue
+                # Filtrado manual necesario: en tests el mock no respeta conf=
                 if confianza < self.confidence_threshold:
                     continue
 
