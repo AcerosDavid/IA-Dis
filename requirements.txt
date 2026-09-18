@@ -4,6 +4,7 @@ opencv-python-headless>=4.10.0
 
 # Base de datos
 sqlalchemy>=2.0.0
+alembic>=1.13.0
 
 # API REST
 fastapi>=0.115.0
