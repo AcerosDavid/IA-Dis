@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from src.database.database import RepositorioEventos
+from src.database.db import RepositorioEventos
 from src.database.models import Base
 
 
@@ -54,12 +54,12 @@ def test_client(db_session):
     para usar la sesión en memoria en lugar de la DB real.
     """
     from src.api.main import app
-    from src.api.routers.eventos import get_db
+    from src.database.db import get_session_dep
 
     def override_get_db():
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_session_dep] = override_get_db
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
