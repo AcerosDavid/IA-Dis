@@ -28,7 +28,7 @@ def test_settings_carga_con_todas_las_variables():
     env = {
         "VIDEO_PATH": "data/raw/test.mp4",
         "MODEL_PATH": "models/yolo26n.pt",
-        "DB_PATH": "data/test.db",
+        "DB_URL": "sqlite:///data/test.db",
         "CONFIDENCE_THRESHOLD": "0.6",
         "API_HOST": "0.0.0.0",
         "API_PORT": "9000",
@@ -37,7 +37,7 @@ def test_settings_carga_con_todas_las_variables():
         s = _settings_sin_env_file()
         assert s.video_path == "data/raw/test.mp4"
         assert s.model_path == "models/yolo26n.pt"
-        assert s.db_path == "data/test.db"
+        assert s.db_url == "sqlite:///data/test.db"
         assert s.confidence_threshold == 0.6
         assert s.api_host == "0.0.0.0"
         assert s.api_port == 9000
@@ -48,7 +48,7 @@ def test_confidence_threshold_default():
     env = {
         "VIDEO_PATH": "data/raw/test.mp4",
         "MODEL_PATH": "models/yolo26n.pt",
-        "DB_PATH": "data/test.db",
+        "DB_URL": "sqlite:///data/test.db",
     }
     with patch.dict(os.environ, env, clear=True):
         s = _settings_sin_env_file()
@@ -60,7 +60,7 @@ def test_api_host_port_defaults():
     env = {
         "VIDEO_PATH": "data/raw/test.mp4",
         "MODEL_PATH": "models/yolo26n.pt",
-        "DB_PATH": "data/test.db",
+        "DB_URL": "sqlite:///data/test.db",
     }
     with patch.dict(os.environ, env, clear=True):
         s = _settings_sin_env_file()
@@ -68,17 +68,16 @@ def test_api_host_port_defaults():
         assert s.api_port == 8000
 
 
-@pytest.mark.parametrize("missing_var", ["VIDEO_PATH", "MODEL_PATH", "DB_PATH"])
+@pytest.mark.parametrize("missing_var", ["VIDEO_PATH", "MODEL_PATH", "DB_URL"])
 def test_load_config_falla_si_falta_variable_obligatoria(missing_var, tmp_path):
     """load_config() lanza SystemExit cuando falta una variable obligatoria."""
     env = {
         "VIDEO_PATH": "v.mp4",
         "MODEL_PATH": "m.pt",
-        "DB_PATH": "d.db",
+        "DB_URL": "sqlite:///d.db",
     }
     del env[missing_var]
 
-    # Usar un .env vacio en tmp_path para que pydantic-settings no lea el .env real
     env_vacio = tmp_path / ".env"
     env_vacio.write_text("")
 
