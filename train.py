@@ -8,6 +8,7 @@ Si se interrumpe, vuelve a ejecutar y continua desde la ultima epoca.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from ultralytics import YOLO
@@ -23,8 +24,13 @@ IMG_SIZE    = 640
 BATCH_SIZE  = 8       # baja a 4 si hay error de memoria
 WORKERS     = 2
 
-# Ruta donde Ultralytics guarda last.pt al interrumpir
-LAST_PT = Path("runs/detect/models/train/weights/last.pt")
+# Ultralytics guarda checkpoints en {OUTPUT_DIR}/{name}/weights/
+TRAIN_DIR = Path(OUTPUT_DIR) / "train" / "weights"
+LAST_PT   = TRAIN_DIR / "last.pt"
+BEST_PT   = TRAIN_DIR / "best.pt"
+
+# Destino final del modelo entrenado
+MODEL_DST = Path("models/best.pt")
 
 
 def main() -> None:
@@ -38,7 +44,6 @@ def main() -> None:
         print("[INFO] Continuando desde la ultima epoca guardada...")
         model = YOLO(str(LAST_PT))
         results = model.train(resume=True)
-
     else:
         print(f"[INFO] Dataset   : {DATA_YAML}")
         print(f"[INFO] Modelo    : {BASE_MODEL}")
@@ -60,18 +65,23 @@ def main() -> None:
             verbose   = True,
         )
 
-    # Copiar best.pt a models/ para uso directo
-    best_src = Path("runs/detect/models/train/weights/best.pt")
-    best_dst = Path("models/best.pt")
+    # Mostrar metricas finales
+    if results is not None:
+        try:
+            box = results.results_dict
+            print(f"\n[METRICAS] mAP50={box.get('metrics/mAP50(B)', 'N/A'):.4f} "
+                  f"| mAP50-95={box.get('metrics/mAP50-95(B)', 'N/A'):.4f}")
+        except Exception:
+            pass  # metricas no disponibles en modo resume
 
-    if best_src.exists():
-        import shutil
-        shutil.copy2(best_src, best_dst)
-        print(f"\n[OK] Modelo guardado en: {best_dst}")
+    # Copiar best.pt al destino final
+    if BEST_PT.exists():
+        shutil.copy2(BEST_PT, MODEL_DST)
+        print(f"\n[OK] Modelo guardado en: {MODEL_DST}")
         print("[OK] Cambia en .env:  MODEL_PATH=models/best.pt")
     else:
-        print(f"[WARN] No se encontro {best_src}")
-        print(f"[WARN] Busca manualmente en: runs/detect/models/train/weights/")
+        print(f"[WARN] No se encontro {BEST_PT}")
+        print(f"[WARN] Busca manualmente en: {TRAIN_DIR}")
 
 
 if __name__ == "__main__":
