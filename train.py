@@ -16,16 +16,17 @@ from ultralytics import YOLO
 
 # ── Configuracion del entrenamiento ──────────────────────────────────────────
 
-DATA_YAML   = "data/processed/equipment.v4-acid-.yolo26/data.yaml"
-BASE_MODEL  = "models/yolo26n.pt"
-OUTPUT_DIR  = "models"
-EPOCHS      = 50
-IMG_SIZE    = 640
-BATCH_SIZE  = 8       # baja a 4 si hay error de memoria
-WORKERS     = 2
+DATA_YAML  = "data/processed/equipment-split/data.yaml"
+BASE_MODEL = "models/best.pt"   # continuar desde el mejor modelo entrenado
+EPOCHS     = 50                  # 50 epocas adicionales
+IMG_SIZE   = 640                 # subir resolucion para mejor deteccion
+BATCH_SIZE = 8
+WORKERS    = 2
 
-# Ultralytics guarda checkpoints en {OUTPUT_DIR}/{name}/weights/
-TRAIN_DIR = Path(OUTPUT_DIR) / "train" / "weights"
+# Ultralytics siempre guarda en runs/detect/{name}/weights/
+# independientemente del parametro project que se pase.
+# Usamos su estructura por defecto para evitar inconsistencias.
+TRAIN_DIR = Path("runs/detect/train/weights")
 LAST_PT   = TRAIN_DIR / "last.pt"
 BEST_PT   = TRAIN_DIR / "best.pt"
 
@@ -42,7 +43,7 @@ def main() -> None:
     if LAST_PT.exists():
         print(f"[INFO] Sesion anterior detectada en: {LAST_PT}")
         print("[INFO] Continuando desde la ultima epoca guardada...")
-        model = YOLO(str(LAST_PT))
+        model   = YOLO(str(LAST_PT))
         results = model.train(resume=True)
     else:
         print(f"[INFO] Dataset   : {DATA_YAML}")
@@ -50,19 +51,19 @@ def main() -> None:
         print(f"[INFO] Epocas    : {EPOCHS}")
         print(f"[INFO] Imagen    : {IMG_SIZE}px  |  Batch: {BATCH_SIZE}")
         print("[INFO] Iniciando entrenamiento desde cero...")
-        model = YOLO(BASE_MODEL)
+        model   = YOLO(BASE_MODEL)
         results = model.train(
-            data      = DATA_YAML,
-            epochs    = EPOCHS,
-            imgsz     = IMG_SIZE,
-            batch     = BATCH_SIZE,
-            workers   = WORKERS,
-            project   = OUTPUT_DIR,
-            name      = "train",
-            exist_ok  = True,
-            patience  = 15,
-            cache     = False,
-            verbose   = True,
+            data     = DATA_YAML,
+            epochs   = EPOCHS,
+            imgsz    = IMG_SIZE,
+            batch    = BATCH_SIZE,
+            workers  = WORKERS,
+            name     = "train",   # → guarda en runs/detect/train/weights/
+            exist_ok = True,
+            patience = 15,
+            save     = True,      # forzar guardado de checkpoints
+            cache    = False,
+            verbose  = True,
         )
 
     # Mostrar metricas finales

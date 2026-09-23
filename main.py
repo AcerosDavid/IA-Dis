@@ -26,7 +26,7 @@ COLORES: dict[str, tuple[int, int, int]] = {
 COLOR_DEFAULT = (200, 200, 200)
 
 # Frames consecutivos sin detectar un ID antes de considerarlo "desaparecido"
-FRAMES_AUSENCIA = 30
+FRAMES_AUSENCIA = 90  # 3 segundos a 30fps — más tolerante con detecciones inestables
 
 # ── Rendimiento ───────────────────────────────────────────────────────────────
 # Ajusta segun tu CPU (i5-7200U sin GPU):
@@ -34,8 +34,8 @@ FRAMES_AUSENCIA = 30
 #   TRACK_IMGSZ=480, TRACK_SKIP=2  ->  ~5-8 FPS   (buena calidad, recomendado)
 #   TRACK_IMGSZ=320, TRACK_SKIP=2  ->  ~8-12 FPS  (calidad media)
 #   TRACK_IMGSZ=160, TRACK_SKIP=2  ->  ~12-15 FPS (basico, pierde objetos pequenos)
-TRACK_IMGSZ   = 480   # tamano de imagen para inferencia YOLO (px)
-TRACK_SKIP    = 2     # ejecutar tracking 1 de cada N frames
+TRACK_IMGSZ   = 640   # tamano de imagen para inferencia YOLO (px)
+TRACK_SKIP    = 1     # procesar todos los frames — mejor estabilidad de IDs
 DISPLAY_WIDTH = 960   # ancho maximo de la ventana en pixeles (0 = sin redimensionar)
 
 
@@ -253,6 +253,8 @@ def main() -> None:
 
                         dibujar_tracking(frame_vis, gestor.activos_para_dibujar())
 
+                    except KeyboardInterrupt:
+                        raise
                     except Exception as e:
                         print(f"[ERROR] frame={frame_count} | {e}")
 
@@ -288,6 +290,8 @@ def main() -> None:
                     pausado = not pausado
                     print(f"[INFO] {'PAUSADO' if pausado else 'REANUDADO'}")
 
+        except KeyboardInterrupt:
+            print("\n[INFO] Interrumpido por usuario (Ctrl+C).")
         finally:
             gestor.cerrar(repo)
             cap.release()
