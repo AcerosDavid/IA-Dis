@@ -20,8 +20,9 @@ from src.database.db import RepositorioEventos, get_session, migrate
 from src.ai.detector import Detector
 
 COLORES: dict[str, tuple[int, int, int]] = {
-    "camion": (0, 200, 255),   # naranja
-    "pala":   (0, 255, 80),    # verde
+    "camion":     (0, 200, 255),   # naranja
+    "excavadora": (0, 255, 80),    # verde
+    "pala":       (255, 100, 0),   # azul
 }
 COLOR_DEFAULT = (200, 200, 200)
 

@@ -10,13 +10,14 @@ import numpy as np
 
 # Mapeo de clases YOLO a nombres del dominio minero
 CLASE_MAP: dict[str, str] = {
-    # Dataset Roboflow equipment.v4
-    "dump_truck":           "camion",
-    "dump":                 "camion",
-    "concrete_mixer_truck": "camion",
-    "excavator":            "pala",
+    # Dataset equipment.yolo26 (3 clases)
+    "dump_truck":   "camion",
+    "excavator":    "excavadora",
+    "wheel_loader": "pala",
+    # Dataset anterior (por compatibilidad)
+    "dump":         "camion",
     # Clases COCO genericas (yolo26n.pt pretrained)
-    "truck":                "camion",
+    "truck":        "camion",
 }
 
 # ID centinela cuando ByteTrack no ha asignado IDs aun
