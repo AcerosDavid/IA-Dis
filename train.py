@@ -19,11 +19,11 @@ from ultralytics import YOLO
 
 # ── Configuracion ─────────────────────────────────────────────────────────────
 
-DATA_YAML  = "data/processed/equipment.yolo26/data.yaml"
-EPOCHS     = 150  # con 20k imagenes necesita mas pasadas para converger
-IMG_SIZE   = 640
-BATCH_SIZE = 8    # bajar a 4 si hay error de memoria
-WORKERS    = 2
+DATA_YAML  = "data/processed/equipment-fast/data.yaml"  # subset 2000 imgs para CPU
+EPOCHS     = 100  # mas epocas porque el dataset es menor
+IMG_SIZE   = 480  # balance calidad/velocidad
+BATCH_SIZE = 18   # ajustado para 24GB RAM
+WORKERS    = 4    # Ryzen 7 tiene 8 nucleos
 
 # Modelos en orden de prioridad
 MODEL_BEST    = Path("models/best.pt")     # modelo ya entrenado (fine-tuning)
