@@ -20,7 +20,7 @@ from ultralytics import YOLO
 # ── Configuracion ─────────────────────────────────────────────────────────────
 
 DATA_YAML  = "data/processed/equipment.yolo26/data.yaml"
-EPOCHS     = 50
+EPOCHS     = 150  # con 20k imagenes necesita mas pasadas para converger
 IMG_SIZE   = 640
 BATCH_SIZE = 8    # bajar a 4 si hay error de memoria
 WORKERS    = 2
