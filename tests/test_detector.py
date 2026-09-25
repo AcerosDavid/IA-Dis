@@ -98,9 +98,10 @@ def test_detect_frame_sin_modelo_lanza_runtime_error():
 
 
 def test_clase_map_correcto():
-    """CLASE_MAP mapea truck→camion y excavator→pala."""
+    """CLASE_MAP mapea truck→camion, excavator→excavadora y wheel_loader→pala."""
     assert CLASE_MAP["truck"] == "camion"
-    assert CLASE_MAP["excavator"] == "pala"
+    assert CLASE_MAP["excavator"] == "excavadora"
+    assert CLASE_MAP["wheel_loader"] == "pala"
 
 
 # ─── Property tests ──────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ def test_property_2_filtrado_clases(clases):
 
     # Ninguna clase inválida debe aparecer
     tipos = {e["tipo_maquina"] for e in result}
-    assert tipos.issubset({"camion", "pala"})
+    assert tipos.issubset({"camion", "pala", "excavadora"})
     assert len(result) == 0  # todas las clases son inválidas
 
 
@@ -183,7 +184,7 @@ def test_property_4_estructura_evento(clase, confianza, frame_number, timestamp)
     assert len(result) == 1
     e = result[0]
     assert set(e.keys()) == {"tipo_maquina", "clase_id", "confianza", "numero_fotograma", "timestamp"}
-    assert e["tipo_maquina"] in {"camion", "pala"}
+    assert e["tipo_maquina"] in {"camion", "pala", "excavadora"}
     assert e["clase_id"] == clase
     assert e["confianza"] >= 0.0
     assert e["numero_fotograma"] == frame_number
