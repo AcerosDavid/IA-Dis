@@ -15,8 +15,8 @@ from src.database.models import Evento
 # ─── Smoke / example tests ───────────────────────────────────────────────────
 
 def test_health_check(test_client):
-    """GET /health retorna {"status": "ok"} con HTTP 200."""
-    resp = test_client.get("/health")
+    """GET /eventos/health retorna {"status": "ok"} con HTTP 200."""
+    resp = test_client.get("/eventos/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
