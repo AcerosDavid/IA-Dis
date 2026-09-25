@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routers import eventos, ciclos, zonas, estadisticas
+from src.api.routers import eventos, ciclos, zonas, estadisticas, video
 
 app = FastAPI(
     title="Mining Dispatch API",
@@ -42,6 +42,7 @@ app.include_router(eventos.router)
 app.include_router(ciclos.router)
 app.include_router(zonas.router)
 app.include_router(estadisticas.router)
+app.include_router(video.router)
 
 
 @app.get("/")

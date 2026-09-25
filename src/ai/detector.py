@@ -42,6 +42,7 @@ class Detector:
         self.model_path           = model_path
         self.confidence_threshold = confidence_threshold
         self.model                = None
+        self._device              = "cpu"  # se actualiza en load_model()
 
     def load_model(self) -> None:
         """
@@ -54,10 +55,10 @@ class Detector:
         from ultralytics import YOLO
 
         try:
-            self.model = YOLO(self.model_path)
-            device     = "cuda" if self._cuda_available() else "cpu"
-            nombre     = os.path.basename(self.model_path)
-            print(f"[INFO] Modelo {nombre} cargado en {device}")
+            self.model  = YOLO(self.model_path)
+            self._device = "cuda" if self._cuda_available() else "cpu"
+            nombre      = os.path.basename(self.model_path)
+            print(f"[INFO] Modelo {nombre} cargado en {self._device}")
         except Exception as e:
             print(f"[MODEL ERROR] No se pudo cargar el modelo: {self.model_path} | {e}")
             raise SystemExit(1) from e
@@ -111,6 +112,7 @@ class Detector:
             verbose=False,
             imgsz=imgsz,
             conf=self.confidence_threshold,
+            device=self._device,
         )
 
         detecciones: list[dict] = []

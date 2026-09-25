@@ -67,3 +67,7 @@ reports/*.csv
 *.swo
 Thumbs.db
 .DS_Store
+
+# ── Docker ────────────────────────────────────────────────────
+.env.docker
+!.env.docker.example
