@@ -10,19 +10,17 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routers import eventos
+from src.api.routers import eventos, ciclos, zonas, estadisticas
 
 app = FastAPI(
     title="Mining Dispatch API",
     description="API REST para el sistema de despacho inteligente de maquinaria minera.",
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-# Permite requests desde cualquier origen en desarrollo.
-# En produccion reemplaza allow_origins=["*"] con los dominios especificos.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,12 +29,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(eventos.router, tags=["Eventos"])
+# ── Startup ───────────────────────────────────────────────────────────────────
+@app.on_event("startup")
+def on_startup():
+    """Crea las tablas si no existen al arrancar la API."""
+    from src.database.db import migrate
+    migrate()
 
-# Routers futuros (descomentar cuando esten implementados):
-# from src.api.routers import ciclos, zonas, turnos, reportes
-# app.include_router(ciclos.router,   tags=["Ciclos"])
-# app.include_router(zonas.router,    tags=["Zonas"])
-# app.include_router(turnos.router,   tags=["Turnos"])
-# app.include_router(reportes.router, tags=["Reportes"])
+
+# ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(eventos.router)
+app.include_router(ciclos.router)
+app.include_router(zonas.router)
+app.include_router(estadisticas.router)
+
+
+@app.get("/")
+def root():
+    return {
+        "sistema": "Mining Dispatch API",
+        "version": "0.2.0",
+        "docs":    "/docs",
+        "endpoints": {
+            "eventos":       "/eventos",
+            "ciclos":        "/ciclos",
+            "zonas":         "/zonas",
+            "estadisticas":  "/estadisticas/resumen",
+            "productividad": "/estadisticas/productividad",
+            "health":        "/eventos/health",
+        }
+    }
