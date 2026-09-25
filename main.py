@@ -2,7 +2,7 @@
 Entry point CLI del sistema de deteccion de maquinaria minera.
 Ejecutar: python main.py
 
-Pipeline: config -> DB -> modelo -> video -> tracking -> eventos de presencia -> resumen
+Pipeline: config -> DB -> modelo -> video -> tracking -> presencia -> geofencing -> ciclos -> resumen
 
 Controles:
     Q / ESC  -- salir
@@ -16,8 +16,15 @@ import time
 import cv2
 
 from src.config import load_config
-from src.database.db import RepositorioEventos, get_session, migrate
+from src.database.db import (
+    RepositorioEventos,
+    RepositorioCiclos,
+    RepositorioZonas,
+    get_session,
+    migrate,
+)
 from src.ai.detector import Detector
+from src.core.geometry import BBox, GestorGeofencing, Zona, dibujar_zonas
 
 COLORES: dict[str, tuple[int, int, int]] = {
     "camion":     (0, 200, 255),   # naranja
@@ -27,17 +34,25 @@ COLORES: dict[str, tuple[int, int, int]] = {
 COLOR_DEFAULT = (200, 200, 200)
 
 # Frames consecutivos sin detectar un ID antes de considerarlo "desaparecido"
-FRAMES_AUSENCIA = 90  # 3 segundos a 30fps — más tolerante con detecciones inestables
+FRAMES_AUSENCIA = 90  # 3 segundos a 30fps
 
 # ── Rendimiento ───────────────────────────────────────────────────────────────
-# Ajusta segun tu CPU (i5-7200U sin GPU):
-#   TRACK_IMGSZ=640, TRACK_SKIP=2  ->  ~3-5 FPS   (maxima calidad, objetos pequenos)
-#   TRACK_IMGSZ=480, TRACK_SKIP=2  ->  ~5-8 FPS   (buena calidad, recomendado)
-#   TRACK_IMGSZ=320, TRACK_SKIP=2  ->  ~8-12 FPS  (calidad media)
-#   TRACK_IMGSZ=160, TRACK_SKIP=2  ->  ~12-15 FPS (basico, pierde objetos pequenos)
-TRACK_IMGSZ   = 640   # tamano de imagen para inferencia YOLO (px)
-TRACK_SKIP    = 1     # procesar todos los frames — mejor estabilidad de IDs
-DISPLAY_WIDTH = 960   # ancho maximo de la ventana en pixeles (0 = sin redimensionar)
+# Ajusta segun tu CPU:
+#   TRACK_IMGSZ=640, TRACK_SKIP=1  ->  maxima calidad
+#   TRACK_IMGSZ=480, TRACK_SKIP=2  ->  buena calidad, recomendado
+#   TRACK_IMGSZ=320, TRACK_SKIP=2  ->  calidad media
+TRACK_IMGSZ   = 640
+TRACK_SKIP    = 1
+DISPLAY_WIDTH = 960
+
+# ── Zonas de ejemplo ─────────────────────────────────────────────────────────
+# Si la DB tiene zonas guardadas, se cargan desde ahí automaticamente.
+# Si no, se usan estas zonas de ejemplo (coordenadas en pixeles del video 848x478).
+# Ajusta las coordenadas segun tu video real usando las esquinas que ves en pantalla.
+ZONAS_DEFAULT = [
+    Zona.rectangulo("zona_carga",    "carga",    50,  50, 300, 200, color_bgr=(0, 255, 0)),
+    Zona.rectangulo("zona_descarga", "descarga", 500, 50, 800, 200, color_bgr=(0, 0, 255)),
+]
 
 
 class GestorPresencia:
@@ -56,9 +71,12 @@ class GestorPresencia:
         detecciones: list[dict],
         frame_count: int,
         repo: RepositorioEventos,
+        gestor_geo: GestorGeofencing | None = None,
+        repo_ciclos: RepositorioCiclos | None = None,
     ) -> list[str]:
         """
         Procesa las detecciones del frame actual.
+        Si se provee gestor_geo, también procesa eventos de geofencing.
         Retorna lista de mensajes de consola para los eventos generados.
         """
         self._cache_detecciones = detecciones
@@ -70,8 +88,36 @@ class GestorPresencia:
             tipo = det["tipo_maquina"]
             ids_vistos.add(tid)
 
+            # ── Geofencing ────────────────────────────────────────────────
+            zona_actual: str | None = None
+            if gestor_geo is not None:
+                bbox = BBox.desde_yolo(det["bbox"])
+                eventos_ciclo = gestor_geo.procesar(
+                    maquina_id   = det["maquina_id"],
+                    tipo_maquina = tipo,
+                    bbox         = bbox,
+                    timestamp    = det["timestamp"],
+                    frame_number = frame_count,
+                )
+                for ec in eventos_ciclo:
+                    zona_actual = ec.zona_nombre
+                    mensajes.append(
+                        f"[ZONA] id={tid} | {ec.tipo_evento} → {ec.zona_nombre}"
+                    )
+                    if repo_ciclos is not None:
+                        try:
+                            repo_ciclos.registrar_evento(ec)
+                        except Exception as e:
+                            print(f"[DB ERROR] ciclo: {e}")
+
+                # Zona donde está actualmente la máquina
+                estado_geo = gestor_geo._estados.get(det["maquina_id"])
+                if estado_geo:
+                    zona_actual = estado_geo.zona_actual
+
             if tid not in self._activos:
                 self._activos[tid] = {
+                    "maquina_id":          det["maquina_id"],
                     "tipo_maquina":        tipo,
                     "clase_id":            det["clase_id"],
                     "frame_aparicion":     frame_count,
@@ -87,6 +133,7 @@ class GestorPresencia:
                     "numero_fotograma":  frame_count,
                     "timestamp":         det["timestamp"],
                     "tipo_evento_ciclo": "aparicion",
+                    "zona_nombre":       zona_actual,
                 })
                 mensajes.append(
                     f"[APARICION]    id={tid} | maquina={tipo} | clase={det['clase_id']} "
@@ -114,7 +161,7 @@ class GestorPresencia:
                 "clase_id":          estado["clase_id"],
                 "confianza":         estado["confianza_max"],
                 "numero_fotograma":  estado["ultimo_frame_visto"],
-                "timestamp":         estado["ultimo_timestamp"],   # timestamp del ultimo frame visto
+                "timestamp":         estado["ultimo_timestamp"],
                 "tipo_evento_ciclo": "desaparicion",
             })
             mensajes.append(
@@ -122,6 +169,9 @@ class GestorPresencia:
                 f"| frames_en_escena={frames_presencia} "
                 f"| aparecio={estado['timestamp_aparicion']}"
             )
+            # Limpiar estado geofencing de la máquina desaparecida
+            if gestor_geo is not None:
+                gestor_geo.limpiar_maquina(estado["maquina_id"])
 
         return mensajes
 
@@ -135,8 +185,8 @@ class GestorPresencia:
         """Numero de maquinas actualmente en escena."""
         return len(self._activos)
 
-    def cerrar(self, repo: RepositorioEventos) -> None:
-        """Registra desaparicion de todos los IDs activos al finalizar el video."""
+    def cerrar(self, repo: RepositorioEventos, gestor_geo: GestorGeofencing | None = None) -> None:
+        """Registra desaparicion de todos los IDs activos al finalizar."""
         for tid, estado in self._activos.items():
             frames_presencia = estado["ultimo_frame_visto"] - estado["frame_aparicion"]
             repo.insertar({
@@ -144,13 +194,15 @@ class GestorPresencia:
                 "clase_id":          estado["clase_id"],
                 "confianza":         estado["confianza_max"],
                 "numero_fotograma":  estado["ultimo_frame_visto"],
-                "timestamp":         estado["ultimo_timestamp"],   # timestamp correcto del ultimo frame
+                "timestamp":         estado["ultimo_timestamp"],
                 "tipo_evento_ciclo": "desaparicion",
             })
             print(
                 f"[DESAPARICION] id={tid} | maquina={estado['tipo_maquina']} "
                 f"| frames_en_escena={frames_presencia}"
             )
+            if gestor_geo is not None:
+                gestor_geo.limpiar_maquina(estado["maquina_id"])
         self._activos.clear()
 
 
@@ -192,9 +244,7 @@ def print_evento(det: dict) -> None:
 
 
 def dibujar_tracking(frame, detecciones: list[dict]) -> None:
-    """Dibuja bounding boxes con ID de tracking sobre el frame (in-place).
-    Texto con sombra: primera pasada blanca (grosor 2), segunda negra (grosor 1).
-    """
+    """Dibuja bounding boxes con ID de tracking sobre el frame (in-place)."""
     for det in detecciones:
         tipo  = det["tipo_maquina"]
         color = COLORES.get(tipo, COLOR_DEFAULT)
@@ -209,13 +259,38 @@ def dibujar_tracking(frame, detecciones: list[dict]) -> None:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
 
 
+def _cargar_zonas(session) -> tuple[GestorGeofencing, bool]:
+    """
+    Carga zonas desde la DB. Si no hay, usa ZONAS_DEFAULT.
+    Retorna (gestor_geo, zonas_configuradas).
+    """
+    repo_zonas = RepositorioZonas(session)
+    gestor_geo = GestorGeofencing()
+
+    zonas_db = repo_zonas.cargar_activas()
+    if zonas_db:
+        for zona in zonas_db:
+            gestor_geo.agregar_zona(zona)
+        print(f"[INFO] Geofencing: {len(zonas_db)} zonas cargadas desde DB")
+        return gestor_geo, True
+    else:
+        for zona in ZONAS_DEFAULT:
+            gestor_geo.agregar_zona(zona)
+            repo_zonas.guardar(zona)   # persiste para futuros usos
+        print(f"[INFO] Geofencing: {len(ZONAS_DEFAULT)} zonas de ejemplo cargadas")
+        print("[INFO] Edita ZONAS_DEFAULT en main.py con las coordenadas reales de tu video")
+        return gestor_geo, False
+
+
 def main() -> None:
     config = load_config()
 
     migrate()
     with get_session() as session:
-        repo    = RepositorioEventos(session)
-        gestor  = GestorPresencia(frames_ausencia=FRAMES_AUSENCIA)
+        repo        = RepositorioEventos(session)
+        repo_ciclos = RepositorioCiclos(session)
+        gestor      = GestorPresencia(frames_ausencia=FRAMES_AUSENCIA)
+        gestor_geo, zonas_ok = _cargar_zonas(session)
 
         detector = Detector(config.model_path, config.confidence_threshold)
         detector.load_model()
@@ -227,10 +302,13 @@ def main() -> None:
         t_inicio    = time.time()
         frame_count = 0
         event_count = 0
+        ciclo_count = 0
         pausado     = False
 
         print("[INFO] Tracking activo (ByteTrack) -- Q=salir | ESPACIO=pausar")
         print(f"[INFO] Modo rendimiento: imgsz={TRACK_IMGSZ}px | skip={TRACK_SKIP} frames")
+        if not zonas_ok:
+            print("[WARN] Usando zonas de ejemplo — ajusta ZONAS_DEFAULT con coordenadas reales")
 
         try:
             while True:
@@ -247,11 +325,22 @@ def main() -> None:
                             detecciones = detector.track_frame(
                                 frame, frame_count, timestamp, imgsz=TRACK_IMGSZ
                             )
-                            mensajes = gestor.procesar(detecciones, frame_count, repo)
+                            mensajes = gestor.procesar(
+                                detecciones,
+                                frame_count,
+                                repo,
+                                gestor_geo  = gestor_geo,
+                                repo_ciclos = repo_ciclos,
+                            )
                             for msg in mensajes:
                                 print(msg)
-                                event_count += 1
+                                if "[APARICION]" in msg or "[DESAPARICION]" in msg:
+                                    event_count += 1
+                                elif "[ZONA]" in msg:
+                                    ciclo_count += 1
 
+                        # Dibujar zonas primero (fondo), luego tracking encima
+                        dibujar_zonas(frame_vis, gestor_geo)
                         dibujar_tracking(frame_vis, gestor.activos_para_dibujar())
 
                     except KeyboardInterrupt:
@@ -259,18 +348,18 @@ def main() -> None:
                     except Exception as e:
                         print(f"[ERROR] frame={frame_count} | {e}")
 
-                    # HUD — texto con sombra (blanco grueso + negro fino)
+                    # HUD — texto con sombra
                     elapsed  = time.time() - t_inicio
                     fps_real = frame_count / elapsed if elapsed > 0 else 0
                     hud = (
                         f"{timestamp} | frame {frame_count} "
                         f"| activos: {gestor.n_activos} | eventos: {event_count} "
-                        f"| {fps_real:.1f} FPS"
+                        f"| ciclos: {ciclo_count} | {fps_real:.1f} FPS"
                     )
                     cv2.putText(frame_vis, hud, (10, 28),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 2, cv2.LINE_AA)
                     cv2.putText(frame_vis, hud, (10, 28),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 0, 0), 1, cv2.LINE_AA)
 
                     if DISPLAY_WIDTH > 0:
                         h_vis, w_vis = frame_vis.shape[:2]
@@ -294,7 +383,7 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\n[INFO] Interrumpido por usuario (Ctrl+C).")
         finally:
-            gestor.cerrar(repo)
+            gestor.cerrar(repo, gestor_geo)
             cap.release()
             cv2.destroyAllWindows()
 
@@ -302,6 +391,7 @@ def main() -> None:
     print(
         f"[RESUMEN] fotogramas_procesados={frame_count} "
         f"| eventos_registrados={event_count} "
+        f"| eventos_ciclo={ciclo_count} "
         f"| duracion_segundos={duracion:.2f}"
     )
 
