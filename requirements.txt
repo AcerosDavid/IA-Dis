@@ -2,6 +2,11 @@
 ultralytics>=8.3.0
 opencv-python-headless>=4.10.0
 
+# Inferencia optimizada en CPU (ONNX Runtime)
+onnxruntime>=1.17.0
+onnx>=1.15.0
+onnxsim>=0.4.33
+
 # Base de datos
 sqlalchemy>=2.0.0
 alembic>=1.13.0
