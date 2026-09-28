@@ -22,6 +22,9 @@ python-dotenv>=1.0.0
 # OCR para números de flota
 easyocr>=1.7.0
 
+# Multipart (requerido por FastAPI para UploadFile en /video/analizar)
+python-multipart>=0.0.9
+
 # Testing
 pytest>=8.3.0
 hypothesis>=6.115.0

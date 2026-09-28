@@ -131,7 +131,11 @@ def test_property_5_round_trip_persistencia(
 @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_property_6_ordenamiento_por_timestamp(db_session, timestamps):
     """
-    Property 6: obtener_todos retorna eventos ordenados por timestamp ASC.
+    Property 6: obtener_todos retorna eventos ordenados por numero_fotograma ASC.
+
+    El campo timestamp es un string libre (formato HH:MM:SS.mmm) cuyo orden
+    lexicografico no es fiable para timestamps arbitrarios. El repositorio
+    ordena por numero_fotograma (entero) que es siempre correcto.
 
     Validates: Requirements 4.5
     """
@@ -145,4 +149,4 @@ def test_property_6_ordenamiento_por_timestamp(db_session, timestamps):
     eventos = repo.obtener_todos()
     assert len(eventos) == len(timestamps)
     for i in range(len(eventos) - 1):
-        assert eventos[i].timestamp <= eventos[i + 1].timestamp
+        assert eventos[i].numero_fotograma <= eventos[i + 1].numero_fotograma

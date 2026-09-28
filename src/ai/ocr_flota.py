@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import time
+import threading
 import cv2
 import numpy as np
 
@@ -91,28 +92,30 @@ class LectorFlota:
         self._cache:  dict[int, str | None] = {}     # track_id → número leído
         self._ultimo: dict[int, int]         = {}    # track_id → último frame OCR
         self._disponible: bool | None        = None  # None=sin intentar
+        self._lock: threading.Lock = threading.Lock()
 
     def _init_reader(self) -> bool:
         """Inicializa EasyOCR (descarga modelos en la 1ª ejecución ~30s)."""
-        if self._disponible is not None:
+        with self._lock:
+            if self._disponible is not None:
+                return self._disponible
+            try:
+                import easyocr
+                print("[OCR] Iniciando EasyOCR (puede tardar ~30s la 1ª vez)…")
+                t0 = time.perf_counter()
+                # Solo inglés + español para números; gpu=False para CPU
+                self._reader = easyocr.Reader(
+                    ["en"],
+                    gpu=self._gpu_disponible(),
+                    verbose=False,
+                )
+                print(f"[OCR] EasyOCR listo en {time.perf_counter()-t0:.1f}s")
+                self._disponible = True
+            except Exception as e:
+                print(f"[OCR] EasyOCR no disponible: {e}")
+                print("[OCR] Instala con: pip install easyocr")
+                self._disponible = False
             return self._disponible
-        try:
-            import easyocr
-            print("[OCR] Iniciando EasyOCR (puede tardar ~30s la 1ª vez)…")
-            t0 = time.perf_counter()
-            # Solo inglés + español para números; gpu=False para CPU
-            self._reader = easyocr.Reader(
-                ["en"],
-                gpu=self._gpu_disponible(),
-                verbose=False,
-            )
-            print(f"[OCR] EasyOCR listo en {time.perf_counter()-t0:.1f}s")
-            self._disponible = True
-        except Exception as e:
-            print(f"[OCR] EasyOCR no disponible: {e}")
-            print("[OCR] Instala con: pip install easyocr")
-            self._disponible = False
-        return self._disponible
 
     def _gpu_disponible(self) -> bool:
         try:

@@ -141,23 +141,21 @@ class RepositorioEventos:
 
     def insertar(self, evento: dict) -> None:
         """
-        Inserta un evento. Usa savepoint para aislar el fallo:
+        Inserta un evento usando un savepoint (begin_nested) para aislar el fallo:
         si el insert falla, solo ese insert se deshace —
         el resto de la sesión queda intacto.
         """
         try:
-            self.session.add(Evento(**evento))
-            self.session.flush()
+            with self.session.begin_nested():   # savepoint real — no invalida la sesión
+                self.session.add(Evento(**evento))
         except Exception as e:
-            # rollback solo hasta el último savepoint (no toda la sesión)
-            self.session.rollback()
             print(f"[DB ERROR] No se pudo insertar evento: {evento} | {e}")
 
     def obtener_todos(self) -> list[Evento]:
-        """Retorna todos los eventos ordenados por timestamp ASC."""
+        """Retorna todos los eventos ordenados por numero de fotograma ASC."""
         return (
             self.session.query(Evento)
-            .order_by(Evento.timestamp.asc())
+            .order_by(Evento.numero_fotograma.asc())
             .all()
         )
 

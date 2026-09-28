@@ -1,22 +1,33 @@
 """
 Entry point CLI del sistema de deteccion de maquinaria minera.
-Ejecutar: python main.py
 
-Pipeline multihilo (3 hilos + sub-hilo OCR):
+Uso:
+    python main.py                              # 1 video (desde .env VIDEO_PATH)
+    python main.py video1.mp4                   # 1 video explícito
+    python main.py video1.mp4 video2.mp4        # 2 videos simultáneos
+    python main.py video1.mp4 video2.mp4 v3.mp4 # hasta 3 videos
+
+Pipeline multihilo por video (3 hilos + sub-hilo OCR):
   Hilo LECTOR     -> lee frames a velocidad del video (~30fps)
   Hilo INFERENCIA -> YOLO + BoT-SORT + filtro estaticos (~5fps)
                      lanza sub-hilo OCR para leer numeros de flota
   Sub-hilo OCR    -> EasyOCR en background (no bloquea YOLO)
   Hilo DISPLAY    -> video fluido (30fps) + bboxes + numero de flota
+                     (hilo principal — OpenCV requiere el hilo principal)
 
 Controles:
-    Q / ESC  -- salir
-    ESPACIO  -- pausar / reanudar
+    Q / ESC  -- salir todos los videos
+    ESPACIO  -- pausar / reanudar todos
+    1 / 2 / 3 -- pausar/reanudar video específico
 """
 from __future__ import annotations
 
 import os
 import queue
+import sys
+import warnings
+# Suprimir warnings de deprecación de PyTorch (quantize, etc.) — solo ruido visual
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 import threading
 import time
 from dataclasses import dataclass, field
@@ -99,6 +110,8 @@ class EstadoCompartido:
     frames_inferidos: int                 = 0
     pausado:          bool                = False
     salir:            bool                = False
+    video_terminado:  bool                = False   # True cuando el hilo lector termina
+    ultimo_frame:     np.ndarray | None   = None    # frame mas reciente para el display
     _lock:            threading.Lock      = field(default_factory=threading.Lock)
 
     def actualizar_dets(
@@ -116,6 +129,16 @@ class EstadoCompartido:
             self.ciclo_count   = ci
             self.numeros_flota = numeros
             self.frames_inferidos += 1
+
+    def actualizar_frame(self, frame: np.ndarray) -> None:
+        """Publica el frame mas reciente para el hilo display (sin competir con inferencia)."""
+        with self._lock:
+            self.ultimo_frame = frame
+
+    def leer_frame(self) -> np.ndarray | None:
+        """Retorna el ultimo frame disponible para display."""
+        with self._lock:
+            return self.ultimo_frame
 
     def leer_dets(self) -> tuple[list[dict], dict[int, str]]:
         with self._lock:
@@ -342,7 +365,8 @@ def _cargar_zonas(session) -> tuple[GestorGeofencing, bool]:
     else:
         for zona in ZONAS_DEFAULT:
             gestor_geo.agregar_zona(zona)
-            if ZONAS_DEFAULT:
+        if ZONAS_DEFAULT:              # guardar fuera del for — evita guardar vacio
+            for zona in ZONAS_DEFAULT:
                 repo_zonas.guardar(zona)
         n = len(ZONAS_DEFAULT)
         print(f"[INFO] Geofencing: {'desactivado' if n == 0 else f'{n} zonas cargadas'}")
@@ -352,22 +376,16 @@ def _cargar_zonas(session) -> tuple[GestorGeofencing, bool]:
 # ── Hilos ─────────────────────────────────────────────────────────────────────
 
 def hilo_lector(
-    cap:       cv2.VideoCapture,
-    frame_q:   queue.Queue,
-    estado:    EstadoCompartido,
-    fps_video: float,
+    cap:        cv2.VideoCapture,
+    frame_q:    queue.Queue,
+    display_q:  queue.Queue,          # queue dedicada para el display (maxsize=1)
+    estado:     EstadoCompartido,
+    fps_video:  float,
 ) -> None:
     """
-    Lee frames a velocidad del video y los encola para el inferidor.
-
-    Para VIDEO GRABADO (maxsize=4):
-      Llena la queue hasta su capacidad — el tracker recibe frames
-      consecutivos con pocos saltos, los IDs son estables.
-      Si la queue esta llena, espera (bloquea) en lugar de descartar.
-
-    Para CAMARA EN VIVO (maxsize=1):
-      Descarta frames viejos — minimiza latencia.
-      Cambiar QUEUE_SIZE=1 en la configuracion.
+    Lee frames y los publica en DOS queues independientes:
+      frame_q   → hilo inferencia (YOLO/tracker)
+      display_q → hilo display (siempre el frame más reciente)
     """
     frame_idx  = 0
     delay_read = 1.0 / fps_video if fps_video > 0 else 1 / 30
@@ -384,8 +402,9 @@ def hilo_lector(
                 print("[LECTOR] Fin del video.")
                 break
 
+            # ── Queue inferencia ──────────────────────────────────────────────
             if QUEUE_SIZE == 1:
-                # Modo camara en vivo: descartar frame viejo si queue llena
+                # Cámara en vivo: descartar frame viejo si llena
                 try:
                     frame_q.put_nowait((frame_idx, frame))
                 except queue.Full:
@@ -398,12 +417,31 @@ def hilo_lector(
                     except queue.Full:
                         pass
             else:
-                # Modo video grabado: bloquear hasta que haya espacio
-                # Esto garantiza que el tracker no se salte frames
+                # Video grabado: acumular hasta QUEUE_SIZE frames
                 try:
-                    frame_q.put((frame_idx, frame), timeout=2.0)
+                    frame_q.put_nowait((frame_idx, frame))
                 except queue.Full:
-                    pass   # si timeout, continuar (estado.salir puede haber cambiado)
+                    try:
+                        frame_q.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        frame_q.put_nowait((frame_idx, frame))
+                    except queue.Full:
+                        pass
+
+            # ── Queue display (siempre el más reciente, nunca bloquea) ────────
+            try:
+                display_q.put_nowait(frame)
+            except queue.Full:
+                try:
+                    display_q.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    display_q.put_nowait(frame)
+                except queue.Full:
+                    pass
 
             frame_idx += 1
 
@@ -412,7 +450,9 @@ def hilo_lector(
             if sleep > 0:
                 time.sleep(sleep)
     finally:
+        estado.video_terminado = True
         frame_q.put(_STOP)
+        display_q.put(_STOP)
         print(f"[LECTOR] Terminado. Frames leidos: {frame_idx}")
 
 
@@ -526,168 +566,287 @@ def hilo_inferencia(
         print(f"[INFERENCIA] Terminado. Inferencias: {estado.frames_inferidos}")
 
 
+# ── Pipeline por video ────────────────────────────────────────────────────────
+
+@dataclass
+class PipelineVideo:
+    """Encapsula un pipeline completo para un único video."""
+    video_path:  str
+    indice:      int              # 1-based: 1, 2, 3
+    ventana:     str              # nombre de la ventana OpenCV
+    estado:      EstadoCompartido = field(default_factory=EstadoCompartido)
+    cap:         object           = field(default=None)   # cv2.VideoCapture
+    fps:         float            = 30.0
+    t_lector:    object           = field(default=None)
+    t_infer:     object           = field(default=None)
+    frame_vis_cache: object       = field(default=None)
+    ultimo_frame_id: object       = field(default=None)
+    frame_count: int              = 0
+    fps_display: float            = 0.0
+    t_fps:       float            = field(default_factory=time.perf_counter)
+    frames_disp: int              = 0
+    t_inicio:    float            = field(default_factory=time.time)
+
+
+def _iniciar_pipeline(
+    pv:         PipelineVideo,
+    detector:   Detector,
+    lector_ocr: LectorFlota | None,
+    repo:       RepositorioEventos,
+    repo_ciclos: RepositorioCiclos,
+    gestor_geo: GestorGeofencing,
+) -> None:
+    """Lanza los hilos de lector e inferencia para un PipelineVideo."""
+    try:
+        pv.cap = open_video(pv.video_path)
+    except SystemExit:
+        print(f"[ERROR] No se pudo abrir video {pv.indice}: {pv.video_path}")
+        pv.estado.salir = True
+        return
+
+    pv.fps   = pv.cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+    # Cada pipeline tiene su propio GestorPresencia para no mezclar IDs
+    gestor = GestorPresencia(frames_ausencia=FRAMES_AUSENCIA)
+
+    frame_q:   queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
+    display_q: queue.Queue = queue.Queue(maxsize=1)
+
+    pv.t_lector = threading.Thread(
+        target=hilo_lector,
+        args=(pv.cap, frame_q, display_q, pv.estado, pv.fps),
+        daemon=True, name=f"lector-v{pv.indice}",
+    )
+    pv.t_infer = threading.Thread(
+        target=hilo_inferencia,
+        args=(frame_q, detector, gestor, gestor_geo,
+              repo, repo_ciclos, pv.estado, pv.fps, lector_ocr),
+        daemon=True, name=f"inferencia-v{pv.indice}",
+    )
+    # Guardar display_q en estado para que el display principal la lea
+    pv.estado._display_q = display_q  # type: ignore[attr-defined]
+
+    pv.t_lector.start()
+    pv.t_infer.start()
+    print(f"[INFO] Video {pv.indice} iniciado: {os.path.basename(pv.video_path)}")
+
+
+def _tick_display(pv: PipelineVideo, gestor_geo: GestorGeofencing,
+                  lector_ocr: LectorFlota | None) -> bool:
+    """
+    Procesa un tick del display para un PipelineVideo.
+    Retorna True si el video sigue activo, False si terminó.
+    """
+    if pv.estado.salir:
+        return False
+
+    display_q = getattr(pv.estado, '_display_q', None)
+    if display_q is None:
+        return False
+
+    # Obtener frame más reciente para display
+    frame_display = None
+    try:
+        item = display_q.get_nowait()
+        if item is _STOP:
+            return False
+        frame_display = item
+    except queue.Empty:
+        pass
+
+    if frame_display is None:
+        if pv.estado.video_terminado and not pv.t_infer.is_alive():
+            return False
+        # Mostrar último frame cacheado si no hay nuevo
+        if pv.frame_vis_cache is not None:
+            cv2.imshow(pv.ventana, pv.frame_vis_cache)
+        return True
+
+    # Frame nuevo — procesar
+    if frame_display is not pv.ultimo_frame_id:
+        pv.ultimo_frame_id = frame_display
+        frame_vis = frame_display.copy()
+
+        if not pv.estado.pausado:
+            detecciones, numeros_flota = pv.estado.leer_dets()
+            dibujar_zonas(frame_vis, gestor_geo)
+            dibujar_tracking(frame_vis, detecciones, numeros_flota)
+
+        # HUD
+        pv.frames_disp += 1
+        el_fps = time.perf_counter() - pv.t_fps
+        if el_fps >= 1.0:
+            pv.fps_display = pv.frames_disp / el_fps
+            pv.frames_disp = 0
+            pv.t_fps = time.perf_counter()
+
+        ts_disp = calcular_timestamp(pv.fps, pv.frame_count)
+        ocr_str = f"OCR:{len(pv.estado.numeros_flota)}" if lector_ocr else ""
+        hud = (
+            f"V{pv.indice} {ts_disp} "
+            f"| act={pv.estado.n_activos} "
+            f"| ev={pv.estado.event_count} "
+            f"{ocr_str} "
+            f"| {pv.fps_display:.0f}fps disp "
+            f"| {pv.estado.fps_infer:.0f}fps inf"
+        )
+        cv2.putText(frame_vis, hud, (10, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame_vis, hud, (10, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
+
+        if pv.estado.pausado:
+            cv2.putText(frame_vis, f"PAUSADO V{pv.indice}", (10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2)
+
+        if lector_ocr and pv.estado.numeros_flota:
+            _dibujar_panel_flota(frame_vis, pv.estado.numeros_flota)
+
+        if DISPLAY_WIDTH > 0:
+            h_vis, w_vis = frame_vis.shape[:2]
+            if w_vis > DISPLAY_WIDTH:
+                scale     = DISPLAY_WIDTH / w_vis
+                frame_vis = cv2.resize(frame_vis, (DISPLAY_WIDTH, int(h_vis * scale)))
+
+        pv.frame_vis_cache = frame_vis
+        pv.frame_count += 1
+
+    if pv.frame_vis_cache is not None:
+        cv2.imshow(pv.ventana, pv.frame_vis_cache)
+
+    return True
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # ── Determinar qué videos analizar ───────────────────────────────────────
     config = load_config()
+
+    if len(sys.argv) > 1:
+        # Videos pasados como argumentos: python main.py v1.mp4 v2.mp4 v3.mp4
+        rutas_video = sys.argv[1:]
+    else:
+        # Fallback al video del .env
+        rutas_video = [config.video_path]
+
+    MAX_VIDEOS = 3
+    rutas_video = rutas_video[:MAX_VIDEOS]
+
+    if not rutas_video:
+        print("[ERROR] No hay videos que procesar. Especifica rutas como argumentos.")
+        return
+
+    print(f"[INFO] Procesando {len(rutas_video)} video(s):")
+    for i, ruta in enumerate(rutas_video, 1):
+        print(f"  [{i}] {ruta}")
+
     migrate()
 
     with get_session() as session:
         repo        = RepositorioEventos(session)
         repo_ciclos = RepositorioCiclos(session)
-        gestor      = GestorPresencia(frames_ausencia=FRAMES_AUSENCIA)
-        gestor_geo, zonas_ok = _cargar_zonas(session)
+        gestor_geo, _ = _cargar_zonas(session)
 
+        # Un solo detector compartido — más eficiente que uno por video
         detector = Detector(config.model_path, config.confidence_threshold)
         detector.load_model()
 
-        # OCR de flota — pre-inicializar en background para que este listo
-        # cuando aparezca el primer camion (evita el retraso de 21s)
+        # Un solo lector OCR compartido — el modelo se carga una sola vez
         lector_ocr: LectorFlota | None = None
         if OCR_HABILITADO:
             lector_ocr = LectorFlota()
-            # Lanzar init en background para no bloquear el arranque
-            def _preload_ocr():
-                lector_ocr._init_reader()
-            threading.Thread(target=_preload_ocr, daemon=True, name="ocr-init").start()
-            print("[INFO] OCR de numeros de flota: ACTIVADO (cargando en background…)")
+            threading.Thread(
+                target=lector_ocr._init_reader,
+                daemon=True, name="ocr-init",
+            ).start()
+            print("[INFO] OCR de flotas: ACTIVADO (cargando en background…)")
         else:
-            print("[INFO] OCR de numeros de flota: DESACTIVADO")
+            print("[INFO] OCR de flotas: DESACTIVADO")
 
-        cap      = open_video(config.video_path)
-        fps      = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        estado   = EstadoCompartido()
-        frame_q: queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
+        # ── Crear y lanzar un pipeline por video ──────────────────────────────
+        pipelines: list[PipelineVideo] = []
+        for i, ruta in enumerate(rutas_video, 1):
+            pv = PipelineVideo(
+                video_path = ruta,
+                indice     = i,
+                ventana    = f"Mining Dispatch — Video {i}: {os.path.basename(ruta)}",
+            )
+            _iniciar_pipeline(pv, detector, lector_ocr, repo, repo_ciclos, gestor_geo)
+            if not pv.estado.salir:
+                pipelines.append(pv)
 
-        print("[INFO] Pipeline multihilo activo")
-        print(f"[INFO] imgsz={TRACK_IMGSZ} | Tracker: BoT-SORT (botsort_mining.yaml)")
-        print("[INFO] Q=salir | ESPACIO=pausar")
+        if not pipelines:
+            print("[ERROR] Ningún video pudo iniciarse.")
+            return
 
-        # ── Lanzar hilos ──────────────────────────────────────────────────────
-        t_lector = threading.Thread(
-            target=hilo_lector,
-            args=(cap, frame_q, estado, fps),
-            daemon=True, name="lector",
-        )
-        t_infer = threading.Thread(
-            target=hilo_inferencia,
-            args=(frame_q, detector, gestor, gestor_geo,
-                  repo, repo_ciclos, estado, fps, lector_ocr),
-            daemon=True, name="inferencia",
-        )
-        t_lector.start()
-        t_infer.start()
+        print(f"\n[INFO] {len(pipelines)} pipeline(s) activo(s)")
+        print("[INFO] Q/ESC=salir | ESPACIO=pausar todos | 1/2/3=pausar video específico")
 
-        # ── Hilo principal = Display ──────────────────────────────────────────
-        t_inicio    = time.time()
-        frame_count = 0
-        fps_display = 0.0
-        t_fps       = time.perf_counter()
-        frames_disp = 0
-        ultimo_frame: np.ndarray | None = None
+        t_inicio = time.time()
 
         try:
-            while not estado.salir:
+            while True:
+                # Tick de display para cada pipeline activo
+                activos = [pv for pv in pipelines if not pv.estado.salir]
+                if not activos:
+                    break
 
-                # Intentar obtener frame mas reciente del lector
-                try:
-                    item = frame_q.get_nowait()
-                    if item is _STOP:
-                        break
-                    _, ultimo_frame = item
-                except queue.Empty:
-                    pass
+                for pv in activos:
+                    sigue = _tick_display(pv, gestor_geo, lector_ocr)
+                    if not sigue:
+                        pv.estado.salir = True
+                        cv2.destroyWindow(pv.ventana)
+                        print(f"[INFO] Video {pv.indice} finalizado")
 
-                if ultimo_frame is None:
-                    if cv2.waitKey(10) & 0xFF in (ord("q"), 27):
-                        estado.salir = True
-                        break
-                    continue
-
-                frame_vis = ultimo_frame.copy()
-
-                if not estado.pausado:
-                    detecciones, numeros_flota = estado.leer_dets()
-                    dibujar_zonas(frame_vis, gestor_geo)
-                    dibujar_tracking(frame_vis, detecciones, numeros_flota)
-
-                # HUD
-                elapsed = time.time() - t_inicio
-                frames_disp += 1
-                el_fps = time.perf_counter() - t_fps
-                if el_fps >= 1.0:
-                    fps_display = frames_disp / el_fps
-                    frames_disp = 0
-                    t_fps = time.perf_counter()
-
-                ts_disp = calcular_timestamp(fps, frame_count)
-                ocr_str = f"| OCR:{len(estado.numeros_flota)} flotas" if lector_ocr else ""
-                hud = (
-                    f"{ts_disp} | f={frame_count} "
-                    f"| activos={estado.n_activos} "
-                    f"| ev={estado.event_count} "
-                    f"{ocr_str} "
-                    f"| disp={fps_display:.1f}fps "
-                    f"| infer={estado.fps_infer:.1f}fps"
-                )
-                cv2.putText(frame_vis, hud, (10, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
-                cv2.putText(frame_vis, hud, (10, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-
-                if estado.pausado:
-                    cv2.putText(frame_vis, "PAUSADO", (10, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 200, 255), 3)
-
-                # Panel lateral de numeros de flota conocidos
-                if lector_ocr and estado.numeros_flota:
-                    _dibujar_panel_flota(frame_vis, estado.numeros_flota)
-
-                if DISPLAY_WIDTH > 0:
-                    h_vis, w_vis = frame_vis.shape[:2]
-                    if w_vis > DISPLAY_WIDTH:
-                        scale     = DISPLAY_WIDTH / w_vis
-                        frame_vis = cv2.resize(
-                            frame_vis, (DISPLAY_WIDTH, int(h_vis * scale))
-                        )
-
-                cv2.imshow("Mining Dispatch  [Q=salir  SPACE=pausar]", frame_vis)
-                frame_count += 1
-
+                # Teclado — afecta a todos o al video específico
                 key = cv2.waitKey(1) & 0xFF
+
                 if key in (ord("q"), 27):
                     print("[INFO] Salida por usuario.")
-                    estado.salir = True
+                    for pv in pipelines:
+                        pv.estado.salir = True
                     break
-                elif key == ord(" "):
-                    estado.pausado = not estado.pausado
-                    print(f"[INFO] {'PAUSADO' if estado.pausado else 'REANUDADO'}")
 
-                time.sleep(max(0, 1 / fps - 0.001))
+                elif key == ord(" "):
+                    # Pausar/reanudar TODOS
+                    nuevo = not all(pv.estado.pausado for pv in activos)
+                    for pv in activos:
+                        pv.estado.pausado = nuevo
+                    print(f"[INFO] {'PAUSADO' if nuevo else 'REANUDADO'} todos")
+
+                elif key in (ord("1"), ord("2"), ord("3")):
+                    idx = int(chr(key)) - 1
+                    if idx < len(activos):
+                        pv = activos[idx]
+                        pv.estado.pausado = not pv.estado.pausado
+                        estado_str = "PAUSADO" if pv.estado.pausado else "REANUDADO"
+                        print(f"[INFO] Video {pv.indice} {estado_str}")
+
+                time.sleep(0.001)   # ceder CPU entre ticks
 
         except KeyboardInterrupt:
             print("\n[INFO] Interrumpido (Ctrl+C).")
         finally:
-            estado.salir = True
-            t_lector.join(timeout=3)
-            t_infer.join(timeout=8)
-            gestor.cerrar(repo, gestor_geo)
-            cap.release()
+            for pv in pipelines:
+                pv.estado.salir = True
+            for pv in pipelines:
+                if pv.t_lector: pv.t_lector.join(timeout=3)
+                if pv.t_infer:  pv.t_infer.join(timeout=8)
+                if pv.cap:      pv.cap.release()
             cv2.destroyAllWindows()
 
     duracion = time.time() - t_inicio
-    print(
-        f"[RESUMEN] frames_display={frame_count} "
-        f"| inferencias={estado.frames_inferidos} "
-        f"| eventos={estado.event_count} "
-        f"| ciclos={estado.ciclo_count} "
-        f"| flotas_leidas={len(estado.numeros_flota)} "
-        f"| duracion={duracion:.2f}s"
-    )
-    if estado.numeros_flota:
-        print("[FLOTAS DETECTADAS]")
-        for tid, num in estado.numeros_flota.items():
-            print(f"  ID:{tid} -> Flota #{num}")
+    print(f"\n[RESUMEN GLOBAL] duracion={duracion:.1f}s | videos={len(pipelines)}")
+    for pv in pipelines:
+        flotas = lector_ocr.todos_historicos() if lector_ocr else {}
+        print(
+            f"  Video {pv.indice} ({os.path.basename(pv.video_path)}): "
+            f"frames={pv.frame_count} | "
+            f"inferencias={pv.estado.frames_inferidos} | "
+            f"eventos={pv.estado.event_count} | "
+            f"flotas={len(flotas)}"
+        )
 
 
 def _dibujar_panel_flota(frame: np.ndarray, numeros: dict[int, str]) -> None:

@@ -284,13 +284,15 @@ def _hilo_inferencia(
         item = frame_queue.get()
 
         if item is _SENTINEL:
-            result_queue.put(_SENTINEL)
+            if result_queue is not None:   # result_queue puede ser None (ver _run_pipeline)
+                result_queue.put(_SENTINEL)
             break
 
         frame_idx, frame = item
 
         if job.cancelar:
-            result_queue.put(_SENTINEL)
+            if result_queue is not None:
+                result_queue.put(_SENTINEL)
             break
 
         timestamp = calcular_timestamp(fps, frame_idx)

@@ -108,9 +108,10 @@ def main() -> None:
                             mensajes = gestor.procesar(detecciones, frame_count, repo)
                             for msg in mensajes:
                                 print(msg)
-                                event_count += 1
+                                if "[APARICION]" in msg or "[DESAPARICION]" in msg:
+                                    event_count += 1
 
-                        dibujar_tracking(frame_vis, gestor.activos_para_dibujar())
+                        dibujar_tracking(frame_vis, gestor.activos_para_dibujar(), {})
 
                     except Exception as e:
                         print(f"[ERROR] frame={frame_count} | {e}")

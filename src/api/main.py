@@ -7,10 +7,21 @@ Ejecutar con:
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routers import eventos, ciclos, zonas, estadisticas, video
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Crea las tablas al arrancar la API y libera recursos al cerrar."""
+    from src.database.db import migrate
+    migrate()
+    yield
+
 
 app = FastAPI(
     title="Mining Dispatch API",
@@ -18,6 +29,7 @@ app = FastAPI(
     version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -29,12 +41,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Startup ───────────────────────────────────────────────────────────────────
-@app.on_event("startup")
-def on_startup():
-    """Crea las tablas si no existen al arrancar la API."""
-    from src.database.db import migrate
-    migrate()
+
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────
