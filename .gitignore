@@ -10,6 +10,7 @@ data/raw/*.mkv
 # ── Modelos YOLO ─────────────────────────────────────────────
 # Modelos entrenados y descargados automaticamente (archivos grandes)
 models/*.pt
+models/*.onnx
 # Excepcion: permitir .gitkeep para que la carpeta sea rastreada
 !models/.gitkeep
 
