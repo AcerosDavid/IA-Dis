@@ -19,6 +19,9 @@ uvicorn[standard]>=0.30.0
 pydantic-settings>=2.5.0
 python-dotenv>=1.0.0
 
+# OCR para números de flota
+easyocr>=1.7.0
+
 # Testing
 pytest>=8.3.0
 hypothesis>=6.115.0
