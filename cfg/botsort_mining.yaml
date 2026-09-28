@@ -1,0 +1,91 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# BoT-SORT — Configuración tuneada para operaciones mineras
+#
+# Contexto del entorno:
+#   - Camiones grandes (dump trucks) de 50-150 toneladas
+#   - Velocidad lenta (5-30 km/h en pista de acarreo)
+#   - Polvo, neblina, iluminación variable (amanecer/atardecer)
+#   - Oclusiones frecuentes: camiones tapándose entre sí en cruces
+#   - Objetos estáticos que parecen camiones: contenedores, tolvas, palas parqueadas
+#   - Video desde cámara fija (no móvil) → GMC menos crítico
+#   - FPS de inferencia real: ~5fps en CPU
+# ─────────────────────────────────────────────────────────────────────────────
+
+tracker_type: botsort
+
+# ── Umbrales de detección ─────────────────────────────────────────────────────
+
+# Primera etapa: asociar detecciones de alta confianza a tracks existentes.
+# DEFAULT: 0.25 → demasiado permisivo, acepta sombras y polvo como camiones.
+# MINERÍA: 0.45 → exige más certeza. Un camión real a distancia media da 0.5+.
+#          Si ves muchos IDs fantasma bajar a 0.40, si pierdes camiones reales
+#          subir a 0.35.
+track_high_thresh: 0.45
+
+# Segunda etapa: recuperar detecciones de baja confianza (camión detrás de polvo).
+# DEFAULT: 0.10 → muy bajo, recupera ruido.
+# MINERÍA: 0.20 → solo recupera si hay evidencia decente. El polvo en minería
+#          puede bajar la confianza de un camión real a 0.22-0.30 brevemente.
+track_low_thresh: 0.20
+
+# Umbral para crear un NUEVO ID de track.
+# DEFAULT: 0.25 → crea IDs nuevos fácilmente → contenedores y rocas grandes
+#          aparecen como "Camión #15" en el primer frame.
+# MINERÍA: 0.55 → solo crea un nuevo track si está muy seguro. Evita IDs
+#          fantasma por maquinaria estática o sombras de nubes de polvo.
+#          Si pierdes camiones nuevos al entrar en escena, bajar a 0.50.
+new_track_thresh: 0.55
+
+# ── Memoria de tracks perdidos (CRÍTICO para oclusiones) ─────────────────────
+
+# Frames que el tracker "recuerda" un ID antes de eliminarlo.
+# DEFAULT: 30 frames (1s a 30fps, 6s a 5fps de inferencia)
+# MINERÍA: 75 frames
+#   Con 5fps de inferencia reales:
+#     75 frames × (1/5fps) = 15 segundos de memoria
+#   Un camión que pasa detrás de otro (oclusión 3-5s) recupera su ID.
+#   Un camión que entra en zona de carga y la cámara lo pierde 8s → recupera.
+#   Demasiado alto (>150) aumenta riesgo de ID swaps en cruces frecuentes.
+track_buffer: 75
+
+# ── Asociación de tracks ──────────────────────────────────────────────────────
+
+# Umbral de similitud IoU/coste para asociar detección ↔ track existente.
+# DEFAULT: 0.80
+# MINERÍA: 0.70 → más permisivo en la asociación.
+#   Los camiones se mueven lento (5fps de inferencia = ~2m entre frames),
+#   el IoU entre frame anterior y actual sigue siendo alto (~0.85+).
+#   Bajarlo a 0.70 ayuda a recuperar tracks tras una oclusión parcial donde
+#   el bbox solo se solapa un 75% con el track predicho.
+match_thresh: 0.70
+
+# Fusionar score de detección con IoU para la asociación.
+# TRUE es mejor en escenas con variación de confianza (polvo, distancia).
+fuse_score: True
+
+# ── Compensación de movimiento global (GMC) ───────────────────────────────────
+
+# Cámara fija → el GMC no aporta mucho pero sparseOptFlow es barato.
+# Si la cámara vibra (viento, maquinaria pesada cerca), mantener sparseOptFlow.
+# Si la cámara es completamente estática, cambiar a "none" para ahorrar CPU.
+gmc_method: sparseOptFlow
+
+# ── ReID (Apariencia) ─────────────────────────────────────────────────────────
+
+# Umbral IoU mínimo para considerar tracks "cercanos" y aplicar ReID.
+# DEFAULT: 0.50
+# MINERÍA: 0.30 → en oclusiones los bboxes quedan separados, necesitamos
+#          comparar apariencia incluso cuando el IoU es bajo.
+proximity_thresh: 0.30
+
+# Similitud de apariencia mínima para re-identificar un track.
+# DEFAULT: 0.80 → muy estricto, no re-identifica si hay polvo/sombra.
+# MINERÍA: 0.65 → permite que un camión con polvo encima sea reconocido
+#          como el mismo tras una oclusión.
+#          Si hay muchos ID swaps bajar a 0.60, si hay confusiones subir a 0.70.
+appearance_thresh: 0.65
+
+# ReID desactivado por ahora — requiere modelo extra y GPU para ser útil.
+# Activar cuando se tenga GPU dedicada: with_reid: True
+with_reid: False
+model: auto
