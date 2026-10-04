@@ -1,11 +1,13 @@
 # ── Dataset y datos ──────────────────────────────────────────
-# Dataset Roboflow (imagenes/labels, no commitear — puede pesar GBs)
-data/processed/
-# Videos de prueba (archivos grandes)
-data/raw/*.mp4
-data/raw/*.avi
-data/raw/*.mov
-data/raw/*.mkv
+# Toda la carpeta data/ — imágenes, videos y datasets pesan GBs
+data/
+
+# Excepciones: mantener la estructura de carpetas con .gitkeep
+!data/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/estados/.gitkeep
+!data/recortes/.gitkeep
 
 # ── Modelos YOLO ─────────────────────────────────────────────
 # Modelos entrenados y descargados automaticamente (archivos grandes)
@@ -74,3 +76,19 @@ Thumbs.db
 # ── Docker ────────────────────────────────────────────────────
 .env.docker
 !.env.docker.example
+
+# ── Fine-tuning y datasets combinados ────────────────────────
+# Datasets merged generados por finetune*.py (pesan GBs)
+data/processed/advanced_merged/
+data/processed/finetune_merged/
+
+# Archivos zip de datasets (para subir a Colab/Drive)
+*.zip
+!colab_finetune.ipynb  # el notebook sí se versiona
+
+# Checkpoints temporales de Colab
+weights/
+
+# ── Benchmark ─────────────────────────────────────────────────
+benchmark_cpu_analysis.py
+test_detector_fps.py
