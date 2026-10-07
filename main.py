@@ -45,14 +45,16 @@ from src.database.db import (
 )
 from src.ai.detector import Detector
 from src.ai.ocr_flota import LectorFlota
+from src.ai.clasificador_estado import ClasificadorEstado
 from src.core.geometry import BBox, GestorGeofencing, Zona, dibujar_zonas
 
 COLORES: dict[str, tuple[int, int, int]] = {
-    "camion":     (0, 200, 255),
-    "excavadora": (0, 255, 80),
-    "pala":       (255, 100, 0),
+    # BGR — colores neón que contrastan con marrón/gris de la mina
+    "camion":     (0, 255, 50),    # verde neón brillante
+    "excavadora": (0, 200, 255),   # amarillo neón
+    "pala":       (255, 50, 180),  # magenta/rosa neón
 }
-COLOR_DEFAULT = (200, 200, 200)
+COLOR_DEFAULT = (255, 255, 255)   # blanco puro
 
 # Frames consecutivos sin ver un ID antes de considerarlo desaparecido.
 # Con QUEUE_SIZE=4 y 5fps de inferencia, el tracker procesa ~5fps reales.
@@ -68,6 +70,12 @@ DISPLAY_WIDTH = 960
 # True = leer numeros de camion en background (requiere EasyOCR instalado)
 # False = desactivar completamente (mas rapido, sin lectura de numeros)
 OCR_HABILITADO = True
+
+# ── Clasificador de estado ────────────────────────────────────────────────────
+# True = clasificar estado de cada máquina (empty/loaded, digging/idle, etc.)
+# Requiere modelos entrenados: python entrenar_clasificador.py
+# False = desactivar (más rápido, sin clasificación de estado)
+CLASIFICADOR_HABILITADO = True
 
 # ── Zonas ─────────────────────────────────────────────────────────────────────
 # DESACTIVADAS TEMPORALMENTE — descomentar cuando coordenadas esten calibradas
@@ -103,6 +111,7 @@ class EstadoCompartido:
     """Datos que el hilo de inferencia publica y el hilo display lee."""
     detecciones:      list[dict]          = field(default_factory=list)
     numeros_flota:    dict[int, str]      = field(default_factory=dict)  # track_id -> numero
+    estados_maquina:  dict[int, str]      = field(default_factory=dict)  # track_id -> estado
     n_activos:        int                 = 0
     event_count:      int                 = 0
     ciclo_count:      int                 = 0
@@ -110,8 +119,8 @@ class EstadoCompartido:
     frames_inferidos: int                 = 0
     pausado:          bool                = False
     salir:            bool                = False
-    video_terminado:  bool                = False   # True cuando el hilo lector termina
-    ultimo_frame:     np.ndarray | None   = None    # frame mas reciente para el display
+    video_terminado:  bool                = False
+    ultimo_frame:     np.ndarray | None   = None
     _lock:            threading.Lock      = field(default_factory=threading.Lock)
 
     def actualizar_dets(
@@ -121,13 +130,16 @@ class EstadoCompartido:
         ev:      int,
         ci:      int,
         numeros: dict[int, str],
+        estados: dict[int, str] | None = None,
     ) -> None:
         with self._lock:
-            self.detecciones   = dets
-            self.n_activos     = n
-            self.event_count   = ev
-            self.ciclo_count   = ci
-            self.numeros_flota = numeros
+            self.detecciones    = dets
+            self.n_activos      = n
+            self.event_count    = ev
+            self.ciclo_count    = ci
+            self.numeros_flota  = numeros
+            if estados is not None:
+                self.estados_maquina = estados
             self.frames_inferidos += 1
 
     def actualizar_frame(self, frame: np.ndarray) -> None:
@@ -140,9 +152,14 @@ class EstadoCompartido:
         with self._lock:
             return self.ultimo_frame
 
-    def leer_dets(self) -> tuple[list[dict], dict[int, str]]:
+    def leer_dets(self) -> tuple[list[dict], dict[int, str], dict[int, str]]:
+        """Retorna (detecciones, numeros_flota, estados_maquina)."""
         with self._lock:
-            return list(self.detecciones), dict(self.numeros_flota)
+            return (
+                list(self.detecciones),
+                dict(self.numeros_flota),
+                dict(self.estados_maquina),
+            )
 
 
 # ── GestorPresencia ───────────────────────────────────────────────────────────
@@ -295,14 +312,34 @@ def print_evento(det: dict) -> None:
 
 
 def dibujar_tracking(
-    frame:        np.ndarray,
-    detecciones:  list[dict],
+    frame:         np.ndarray,
+    detecciones:   list[dict],
     numeros_flota: dict[int, str],
+    estados:       dict[int, str] | None = None,
 ) -> None:
     """
     Dibuja bboxes estilo SmartPSS con esquinas marcadas.
-    Si el numero de flota esta disponible, lo muestra en la etiqueta.
+    Muestra número de flota (OCR) y estado operativo (clasificador).
     """
+    # Colores neón por estado — contrastan con marrón/gris de la mina
+    ESTADO_COLORES = {
+        # Camión
+        "empty":            (200, 200, 200),   # gris claro — vacío/neutro
+        "loaded":           (0,   255, 50),    # verde neón — cargado ✅
+        "dumping":          (0,   50,  255),   # rojo brillante — descargando
+        "traveling_empty":  (180, 180, 255),   # azul claro — viajando vacío
+        "traveling_loaded": (0,   200, 50),    # verde medio — viajando cargado
+        "waiting_empty":    (150, 150, 150),   # gris — esperando vacío
+        "being_loaded":     (0,   255, 200),   # cyan brillante — siendo cargado
+        # Excavadora
+        "digging":          (0,   220, 255),   # amarillo neón — excavando
+        "loading_truck":    (50,  255, 255),   # cian neón — cargando camión
+        "traveling":        (200, 200, 255),   # lavanda — moviéndose
+        # Pala
+        "scooping":         (255, 50,  200),   # magenta neón — recogiendo
+        "dumping_truck":    (255, 150, 0),     # naranja brillante — descargando
+    }
+
     for det in detecciones:
         tipo  = det["tipo_maquina"]
         color = COLORES.get(tipo, COLOR_DEFAULT)
@@ -311,46 +348,71 @@ def dibujar_tracking(
         w_box = x2 - x1
         h_box = y2 - y1
 
-        # Bbox fino
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+        # Estado del dict de detección (puesto por hilo_inferencia)
+        estado_maq = det.get("estado") or (estados.get(tid) if estados else None)
 
-        # Esquinas gruesas estilo SmartPSS
-        cs = min(w_box, h_box, 20)
+        # Color del bbox según estado si está disponible
+        color_bbox = ESTADO_COLORES.get(estado_maq, color) if estado_maq else color
+
+        # Bbox sólido grueso — más visible sobre fondo marrón/gris
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color_bbox, 3)
+        # Segunda pasada semitransparente para dar profundidad
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), color_bbox, -1)
+        cv2.addWeighted(overlay, 0.08, frame, 0.92, 0, frame)
+
+        # Esquinas gruesas estilo SmartPSS — más visibles
+        cs = min(w_box, h_box, 25)
         for (ox, oy, dx, dy) in [
             (x1, y1,  cs, 0), (x1, y1, 0,  cs),
             (x2, y1, -cs, 0), (x2, y1, 0,  cs),
             (x1, y2,  cs, 0), (x1, y2, 0, -cs),
             (x2, y2, -cs, 0), (x2, y2, 0, -cs),
         ]:
-            cv2.line(frame, (ox, oy), (ox + dx, oy + dy), color, 2)
+            cv2.line(frame, (ox, oy), (ox + dx, oy + dy), color_bbox, 4)
 
         # Etiqueta principal
         numero = numeros_flota.get(tid)
         if numero:
-            # Numero de flota conocido — mostrarlo prominentemente
-            label_top  = f"#{numero}"
-            label_bot  = f"ID:{tid} {tipo} {det['confianza']:.2f}"
+            label_top = f"#{numero}"
+            label_bot = f"ID:{tid} {tipo} {det['confianza']:.2f}"
         else:
-            label_top  = None
+            label_top = None
             label_bot  = f"ID:{tid} {tipo} {det['confianza']:.2f}"
 
-        # Etiqueta inferior (siempre)
-        (tw, th), _ = cv2.getTextSize(label_bot, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
-        cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-        cv2.putText(frame, label_bot, (x1 + 2, y1 - 3),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 0, 0), 1, cv2.LINE_AA)
+        # Etiqueta inferior — fondo sólido con borde
+        (tw, th), _ = cv2.getTextSize(label_bot, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+        # Fondo negro sólido para máximo contraste
+        cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 8, y1), (0, 0, 0), -1)
+        cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 8, y1), color_bbox, 2)
+        cv2.putText(frame, label_bot, (x1 + 4, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, color_bbox, 1, cv2.LINE_AA)
 
-        # Numero de flota en el centro del bbox (grande y visible)
+        # Badge de estado operativo — grande y sólido
+        if estado_maq:
+            color_est   = ESTADO_COLORES.get(estado_maq, (200, 200, 200))
+            label_est   = estado_maq.upper().replace("_", " ")
+            (ew, eh), _ = cv2.getTextSize(label_est, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 2)
+            ex1 = x1
+            ey1 = y2 + 3
+            ex2 = x1 + ew + 12
+            ey2 = y2 + eh + 12
+            # Fondo sólido negro + borde de color
+            cv2.rectangle(frame, (ex1, ey1), (ex2, ey2), (0, 0, 0), -1)
+            cv2.rectangle(frame, (ex1, ey1), (ex2, ey2), color_est, 2)
+            cv2.putText(frame, label_est, (ex1 + 6, ey2 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, color_est, 2, cv2.LINE_AA)
+
+        # Número de flota — grande y visible
         if label_top:
-            (nw, nh), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+            (nw, nh), _ = cv2.getTextSize(label_top, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)
             nx = x1 + (w_box - nw) // 2
             ny = y1 + (h_box + nh) // 2
-            # Sombra negra
-            cv2.putText(frame, label_top, (nx + 1, ny + 1),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 3, cv2.LINE_AA)
-            # Texto en color de tipo
+            # Sombra negra gruesa para visibilidad
+            cv2.putText(frame, label_top, (nx + 2, ny + 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 5, cv2.LINE_AA)
             cv2.putText(frame, label_top, (nx, ny),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, color_bbox, 3, cv2.LINE_AA)
 
 
 def _cargar_zonas(session) -> tuple[GestorGeofencing, bool]:
@@ -457,19 +519,21 @@ def hilo_lector(
 
 
 def hilo_inferencia(
-    frame_q:    queue.Queue,
-    detector:   Detector,
-    gestor:     GestorPresencia,
-    gestor_geo: GestorGeofencing,
-    repo:       RepositorioEventos,
-    repo_ciclos: RepositorioCiclos,
-    estado:     EstadoCompartido,
-    fps_video:  float,
-    lector_ocr: LectorFlota | None,
+    frame_q:      queue.Queue,
+    detector:     Detector,
+    gestor:       GestorPresencia,
+    gestor_geo:   GestorGeofencing,
+    repo:         RepositorioEventos,
+    repo_ciclos:  RepositorioCiclos,
+    estado:       EstadoCompartido,
+    fps_video:    float,
+    lector_ocr:   LectorFlota | None,
+    clasificador: ClasificadorEstado | None = None,
 ) -> None:
     """
     Consume frames, corre YOLO + BoT-SORT + filtro estaticos.
     Lanza OCR en sub-hilo para no bloquear la inferencia.
+    Clasifica estado de cada maquina (empty/loaded, digging/idle, etc.)
     """
     ev_count    = 0
     ciclo_count = 0
@@ -519,11 +583,14 @@ def hilo_inferencia(
                     print(msg)
                     if "[APARICION]" in msg or "[DESAPARICION]" in msg:
                         ev_count += 1
-                        # Limpiar cache OCR cuando un ID desaparece
-                        if "[DESAPARICION]" in msg and lector_ocr is not None:
+                        if "[DESAPARICION]" in msg:
                             try:
                                 tid_str = msg.split("id=")[1].split(" ")[0]
-                                lector_ocr.limpiar_track(int(tid_str))
+                                tid_int = int(tid_str)
+                                if lector_ocr is not None:
+                                    lector_ocr.limpiar_track(tid_int)
+                                if clasificador is not None:
+                                    clasificador.limpiar_track(tid_int)
                             except Exception:
                                 pass
                     elif "[ZONA]" in msg:
@@ -531,19 +598,42 @@ def hilo_inferencia(
 
                 activos = gestor.activos_para_dibujar()
 
-                # Encolar para OCR (no bloqueante — si la cola esta llena, saltar)
+                # Clasificar estado de cada máquina (empty/loaded, digging/idle…)
+                # Se corre en el mismo hilo — tarda ~2ms por detección (MobileNet)
+                if clasificador is not None and activos:
+                    for det in activos:
+                        # Estado visual (clasificador de imagen)
+                        estado_visual = clasificador.clasificar(
+                            frame, det["bbox"],
+                            det["tipo_maquina"],
+                            det["track_id"],
+                            frame_idx,
+                        )
+                        if estado_visual:
+                            # Estado combinado (visual + movimiento del tracker)
+                            hist = detector._historial.get(det["track_id"])
+                            es_estatico = hist.es_estatico if hist else True
+                            estado_final = clasificador.estado_combinado(
+                                det["track_id"],
+                                det["tipo_maquina"],
+                                es_estatico,
+                            )
+                            det["estado"] = estado_final or estado_visual
+
+                # Encolar para OCR (no bloqueante)
                 if lector_ocr is not None and activos:
                     try:
                         ocr_queue.put_nowait((frame.copy(), activos, frame_idx))
                     except queue.Full:
-                        pass   # OCR ocupado — no bloquear YOLO
+                        pass
 
                 # Publicar al display
-                numeros = lector_ocr.todos_conocidos() if lector_ocr else {}
+                numeros  = lector_ocr.todos_conocidos() if lector_ocr else {}
+                estados  = clasificador.todos_estados() if clasificador else {}
                 estado.actualizar_dets(
                     activos, gestor.n_activos,
                     ev_count, ciclo_count,
-                    numeros,
+                    numeros, estados,
                 )
 
             except Exception as e:
@@ -589,12 +679,13 @@ class PipelineVideo:
 
 
 def _iniciar_pipeline(
-    pv:         PipelineVideo,
-    detector:   Detector,
-    lector_ocr: LectorFlota | None,
-    repo:       RepositorioEventos,
-    repo_ciclos: RepositorioCiclos,
-    gestor_geo: GestorGeofencing,
+    pv:           PipelineVideo,
+    detector:     Detector,
+    lector_ocr:   LectorFlota | None,
+    repo:         RepositorioEventos,
+    repo_ciclos:  RepositorioCiclos,
+    gestor_geo:   GestorGeofencing,
+    clasificador: ClasificadorEstado | None = None,
 ) -> None:
     """Lanza los hilos de lector e inferencia para un PipelineVideo."""
     try:
@@ -620,7 +711,7 @@ def _iniciar_pipeline(
     pv.t_infer = threading.Thread(
         target=hilo_inferencia,
         args=(frame_q, detector, gestor, gestor_geo,
-              repo, repo_ciclos, pv.estado, pv.fps, lector_ocr),
+              repo, repo_ciclos, pv.estado, pv.fps, lector_ocr, clasificador),
         daemon=True, name=f"inferencia-v{pv.indice}",
     )
     # Guardar display_q en estado para que el display principal la lea
@@ -668,9 +759,9 @@ def _tick_display(pv: PipelineVideo, gestor_geo: GestorGeofencing,
         frame_vis = frame_display.copy()
 
         if not pv.estado.pausado:
-            detecciones, numeros_flota = pv.estado.leer_dets()
+            detecciones, numeros_flota, estados = pv.estado.leer_dets()
             dibujar_zonas(frame_vis, gestor_geo)
-            dibujar_tracking(frame_vis, detecciones, numeros_flota)
+            dibujar_tracking(frame_vis, detecciones, numeros_flota, estados)
 
         # HUD
         pv.frames_disp += 1
@@ -764,6 +855,18 @@ def main() -> None:
         else:
             print("[INFO] OCR de flotas: DESACTIVADO")
 
+        # Clasificador de estado compartido — carga lazy por tipo
+        clasificador: ClasificadorEstado | None = None
+        if CLASIFICADOR_HABILITADO:
+            clasificador = ClasificadorEstado()
+            modelos_ok = [t for t, ok in clasificador._disponible.items() if ok]
+            if modelos_ok:
+                print(f"[INFO] Clasificador de estado: ACTIVO ({modelos_ok})")
+            else:
+                print("[INFO] Clasificador de estado: sin modelos — ejecuta: python entrenar_clasificador.py")
+        else:
+            print("[INFO] Clasificador de estado: DESACTIVADO")
+
         # ── Crear y lanzar un pipeline por video ──────────────────────────────
         pipelines: list[PipelineVideo] = []
         for i, ruta in enumerate(rutas_video, 1):
@@ -772,7 +875,7 @@ def main() -> None:
                 indice     = i,
                 ventana    = f"Mining Dispatch — Video {i}: {os.path.basename(ruta)}",
             )
-            _iniciar_pipeline(pv, detector, lector_ocr, repo, repo_ciclos, gestor_geo)
+            _iniciar_pipeline(pv, detector, lector_ocr, repo, repo_ciclos, gestor_geo, clasificador)
             if not pv.estado.salir:
                 pipelines.append(pv)
 
