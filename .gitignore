@@ -1,43 +1,32 @@
-# ── Dataset y datos ──────────────────────────────────────────
-# Toda la carpeta data/ — imágenes, videos y datasets pesan GBs
+# ── Datos, videos y datasets ────────────────────────────────────────────────
 data/
-
-# Excepciones: mantener la estructura de carpetas con .gitkeep
 !data/.gitkeep
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/estados/.gitkeep
-!data/recortes/.gitkeep
 
-# ── Modelos YOLO ─────────────────────────────────────────────
-# Modelos entrenados y descargados automaticamente (archivos grandes)
+# ── Modelos y pesos grandes ─────────────────────────────────────────────────
 models/*.pt
 models/*.onnx
-# Excepcion: permitir .gitkeep para que la carpeta sea rastreada
 !models/.gitkeep
-
-# ── Salidas de entrenamiento YOLO ────────────────────────────
-# Ultralytics genera esto al correr train.py (miles de archivos)
+weights/
 runs/
 
-# ── Base de datos local ───────────────────────────────────────
+# ── Base de datos local ─────────────────────────────────────────────────────
 *.db
 *.sqlite
 *.sqlite3
 *.db-shm
 *.db-wal
 
-# ── Variables de entorno ──────────────────────────────────────
+# ── Variables de entorno ────────────────────────────────────────────────────
 .env
 !.env.example
 
-# ── Entornos virtuales ────────────────────────────────────────
+# ── Entornos virtuales ──────────────────────────────────────────────────────
 .venv/
 venv/
 env/
 ENV/
 
-# ── Python ────────────────────────────────────────────────────
+# ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -49,8 +38,9 @@ __pycache__/
 dist/
 build/
 .eggs/
+.ipynb
 
-# ── Testing ───────────────────────────────────────────────────
+# ── Testing ─────────────────────────────────────────────────────────────────
 .pytest_cache/
 .hypothesis/
 .coverage
@@ -58,14 +48,13 @@ coverage.xml
 htmlcov/
 *.log
 
-# ── Reportes generados ────────────────────────────────────────
+# ── Reportes generados ──────────────────────────────────────────────────────
 reports/*.pdf
 reports/*.xlsx
 reports/*.csv
-
 !reports/.gitkeep
 
-# ── IDE ───────────────────────────────────────────────────────
+# ── IDE / sistema ───────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
@@ -73,22 +62,7 @@ reports/*.csv
 Thumbs.db
 .DS_Store
 
-# ── Docker ────────────────────────────────────────────────────
-.env.docker
-!.env.docker.example
-
-# ── Fine-tuning y datasets combinados ────────────────────────
-# Datasets merged generados por finetune*.py (pesan GBs)
+# ── Datasets combinados y archivos zip ──────────────────────────────────────
 data/processed/advanced_merged/
 data/processed/finetune_merged/
-
-# Archivos zip de datasets (para subir a Colab/Drive)
 *.zip
-!colab_finetune.ipynb  # el notebook sí se versiona
-
-# Checkpoints temporales de Colab
-weights/
-
-# ── Benchmark ─────────────────────────────────────────────────
-benchmark_cpu_analysis.py
-test_detector_fps.py
