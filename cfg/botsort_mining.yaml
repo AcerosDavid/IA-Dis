@@ -40,13 +40,13 @@ new_track_thresh: 0.55
 
 # Frames que el tracker "recuerda" un ID antes de eliminarlo.
 # DEFAULT: 30 frames (1s a 30fps, 6s a 5fps de inferencia)
-# MINERÍA: 75 frames
+# MINERÍA: 150 frames
 #   Con 5fps de inferencia reales:
-#     75 frames × (1/5fps) = 15 segundos de memoria
+#     150 frames × (1/5fps) = 30 segundos de memoria
 #   Un camión que pasa detrás de otro (oclusión 3-5s) recupera su ID.
 #   Un camión que entra en zona de carga y la cámara lo pierde 8s → recupera.
-#   Demasiado alto (>150) aumenta riesgo de ID swaps en cruces frecuentes.
-track_buffer: 75
+#   Demasiado alto (>200) aumenta riesgo de ID swaps en cruces frecuentes.
+track_buffer: 150
 
 # ── Asociación de tracks ──────────────────────────────────────────────────────
 

@@ -101,7 +101,7 @@ class Detector:
       - PyTorch CPU     fallback
 
     Tracker: BoT-SORT con cfg/botsort_mining.yaml
-      - track_buffer=75 → 15s de memoria a 5fps (sobrevive oclusiones)
+      - track_buffer=150 → 30s de memoria a 5fps (sobrevive oclusiones largas)
       - new_track_thresh=0.55 → no crea IDs por sombras/polvo
       - appearance_thresh=0.65 → re-identifica tras nube de polvo
 
@@ -122,6 +122,8 @@ class Detector:
         self._historial: dict[int, _HistorialTrack] = defaultdict(_HistorialTrack)
         # Tracker config path (absoluto para evitar problemas de CWD)
         self._tracker_cfg = os.path.abspath(TRACKER_CFG) if os.path.exists(TRACKER_CFG) else None
+        # Tracker propio para el backend ONNX (no depende de YOLO.predictor)
+        self._tracker = None
 
     # ── Carga ─────────────────────────────────────────────────────────────────
 
@@ -256,6 +258,49 @@ class Detector:
         """Limpia el historial de movimiento (llamar al reiniciar el video)."""
         self._historial.clear()
 
+    def reset(self) -> None:
+        """
+        Reinicia TODO el estado entre videos: historial de estáticos y tracker.
+
+        Imprescindible al reutilizar un Detector cacheado: sin esto los track_id
+        del video anterior se filtran al siguiente.
+        """
+        self._historial.clear()
+        self._tracker = None
+        # En el backend PyTorch, el tracker vive dentro del predictor de YOLO.
+        if self.model is not None and getattr(self.model, "predictor", None) is not None:
+            self.model.predictor = None
+
+    def _init_tracker(self):
+        """Crea un BYTETracker/BoT-SORT a partir de cfg/botsort_mining.yaml."""
+        from ultralytics.trackers.track import TRACKER_MAP
+        from ultralytics.utils import YAML, IterableSimpleNamespace
+
+        defaults = {
+            "tracker_type":      "botsort",
+            "track_high_thresh": 0.45,
+            "track_low_thresh":  0.20,
+            "new_track_thresh":  0.55,
+            "track_buffer":      150,
+            "match_thresh":      0.70,
+            "fuse_score":        True,
+            "gmc_method":        "sparseOptFlow",
+            "proximity_thresh":  0.30,
+            "appearance_thresh": 0.65,
+            "with_reid":         False,
+            "model":             "auto",
+        }
+        if self._tracker_cfg and os.path.exists(self._tracker_cfg):
+            try:
+                defaults.update(YAML.load(self._tracker_cfg) or {})
+            except Exception as e:
+                print(f"[WARN] No se pudo leer {self._tracker_cfg}: {e}")
+
+        cfg = IterableSimpleNamespace(**defaults)
+        cfg.device = "cpu"
+        tracker_cls = TRACKER_MAP.get(cfg.tracker_type, TRACKER_MAP["botsort"])
+        return tracker_cls(args=cfg)
+
     # ── Backends ──────────────────────────────────────────────────────────────
 
     def _track_pytorch(
@@ -265,22 +310,20 @@ class Detector:
         timestamp: str,
         imgsz: int,
     ) -> list[dict]:
-        import cv2
         if self.model is None:
-            raise RuntimeError("Modelo no cargado.")
-
-        frame_r = cv2.resize(frame, (imgsz, imgsz))
-        h_orig, w_orig = frame.shape[:2]
-        scale_x = w_orig / imgsz
-        scale_y = h_orig / imgsz
+            # Puede ocurrir si la sesión ONNX existía pero el tracker falló.
+            from ultralytics import YOLO
+            self.model = YOLO(self.model_path)
 
         # Pasar tracker config — si no existe, BoT-SORT con defaults
         tracker_kwarg = {}
         if self._tracker_cfg and os.path.exists(self._tracker_cfg):
             tracker_kwarg["tracker"] = self._tracker_cfg
 
+        # YOLO hace su propio letterbox y devuelve las cajas YA escaladas al
+        # frame original. No redimensionar antes ni volver a escalar después.
         resultados = self.model.track(
-            frame_r,
+            frame,
             persist=True,
             verbose=False,
             imgsz=imgsz,
@@ -318,13 +361,30 @@ class Detector:
                     "confianza":        float(box.conf),
                     "numero_fotograma": frame_number,
                     "timestamp":        timestamp,
-                    "bbox": [
-                        x1 * scale_x, y1 * scale_y,
-                        x2 * scale_x, y2 * scale_y,
-                    ],
+                    "bbox":             [x1, y1, x2, y2],
                 })
 
         return detecciones
+
+    @staticmethod
+    def _letterbox(frame: np.ndarray, imgsz: int) -> tuple[np.ndarray, float, int, int]:
+        """
+        Redimensiona manteniendo aspecto y rellena hasta (imgsz, imgsz).
+
+        Returns:
+            (imagen, ratio, pad_x, pad_y) — para deshacer la transformación.
+        """
+        import cv2
+        h, w = frame.shape[:2]
+        ratio = min(imgsz / w, imgsz / h)
+        new_w, new_h = max(1, round(w * ratio)), max(1, round(h * ratio))
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        pad_x = (imgsz - new_w) // 2
+        pad_y = (imgsz - new_h) // 2
+        canvas = np.full((imgsz, imgsz, 3), 114, dtype=np.uint8)
+        canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+        return canvas, ratio, pad_x, pad_y
 
     def _track_onnx(
         self,
@@ -333,61 +393,97 @@ class Detector:
         timestamp: str,
         imgsz: int,
     ) -> list[dict]:
-        """ONNX con ByteTrack fallback (BoT-SORT requiere PyTorch para ReID)."""
-        import cv2
+        """
+        Inferencia ONNX + NMS + BoT-SORT.
+
+        El ONNX exportado (dynamic=True) devuelve la salida cruda del modelo,
+        por lo que hay que hacer NMS aquí. Se soportan dos formatos:
+          - (1, 4+nc, N)  YOLOv8/v11/v26 clásico (cx, cy, w, h, scores…)
+          - (1, N, 6)     YOLO26 end-to-end (x1, y1, x2, y2, conf, cls)
+        """
+        import torch
+        from ultralytics.engine.results import Results
+        from ultralytics.utils.nms import non_max_suppression
 
         if self._ort_session is None:
             raise RuntimeError("Sesión ONNX no inicializada.")
 
         h_orig, w_orig = frame.shape[:2]
-        img = cv2.resize(frame, (imgsz, imgsz))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.transpose(2, 0, 1).astype(np.float32) / 255.0
-        img = np.expand_dims(img, axis=0)
+        canvas, ratio, pad_x, pad_y = self._letterbox(frame, imgsz)
+
+        img = canvas[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255.0
+        img = np.ascontiguousarray(img)[None]
 
         input_name = self._ort_session.get_inputs()[0].name
         outputs    = self._ort_session.run(None, {input_name: img})
-        preds      = outputs[0][0]   # (N, 7+)
+        pred       = outputs[0]
+        pred       = pred[0] if pred.ndim == 3 else pred
 
-        mask  = preds[:, 4] >= self.confidence_threshold
-        preds = preds[mask]
-        if preds.shape[0] == 0:
+        # clone(): non_max_suppression modifica las coordenadas in-place.
+        # Sin copia, si el backend reutiliza el buffer de salida, el segundo
+        # frame interpretaría cajas xyxy como si fueran cxcywh.
+        t = torch.from_numpy(np.asarray(pred)).clone()
+        if t.ndim != 2:
             return []
 
-        scale_x = w_orig / imgsz
-        scale_y = h_orig / imgsz
-        boxes_scaled = preds[:, :4].copy()
-        boxes_scaled[:, [0, 2]] *= scale_x
-        boxes_scaled[:, [1, 3]] *= scale_y
+        nc = len(self._class_names) or 1
+        # Detectar layout: (C, N) clásico vs (N, 6) end-to-end.
+        if t.shape[1] > t.shape[0] and t.shape[0] <= 4 + nc:
+            t = t.T                       # → (N, C)
+            end2end = False
+        else:
+            end2end = t.shape[1] == 6
 
-        # Necesitamos PyTorch para el tracker
-        import torch
-        if self.model is None:
-            from ultralytics import YOLO
-            self.model = YOLO(self.model_path)
+        if t.numel() == 0:
+            return []
 
-        boxes_t = torch.tensor(boxes_scaled, dtype=torch.float32)
-        confs_t = torch.tensor(preds[:, 4],  dtype=torch.float32)
-        cls_t   = torch.tensor(preds[:, 5],  dtype=torch.float32)
+        if end2end:
+            batch = t.unsqueeze(0)        # (1, N, 6)
+        else:
+            batch = t.T.unsqueeze(0)      # (1, C, N)
 
-        from ultralytics.engine.results import Results
-        orig_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result   = Results(
-            orig_img=orig_rgb, path="",
-            names=self._class_names,
-            boxes=torch.cat([boxes_t, confs_t.unsqueeze(1), cls_t.unsqueeze(1)], dim=1),
-        )
+        det = non_max_suppression(
+            batch,
+            conf_thres=self.confidence_threshold,
+            iou_thres=0.7,
+            agnostic=True,
+            max_det=20,
+            end2end=end2end,
+        )[0]
 
-        tracked = None
-        if hasattr(self.model, 'predictor') and self.model.predictor:
-            try:
-                tracked = self.model.predictor.trackers[0].update(
-                    result.boxes.data.numpy(), frame
-                )
-            except Exception:
-                pass
+        if det is None or len(det) == 0:
+            return []
 
-        if tracked is None:
+        # Volver de coordenadas del canvas (letterbox) al frame original.
+        boxes = det[:, :4].clone()
+        boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / ratio
+        boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / ratio
+        boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(0, w_orig)
+        boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(0, h_orig)
+
+        confs = det[:, 4]
+        clss  = det[:, 5].long()
+
+        keep = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        boxes, confs, clss = boxes[keep], confs[keep], clss[keep]
+        if len(boxes) == 0:
+            return []
+
+        # Boxes espera (N, 6) = xyxy + conf + cls y deriva .xywh/.conf/.cls.
+        data = torch.cat([boxes, confs[:, None], clss[:, None].float()], dim=1)
+        result = Results(orig_img=frame, path="", names=self._class_names, boxes=data)
+
+        try:
+            if self._tracker is None:
+                self._tracker = self._init_tracker()
+            # El tracker espera un objeto con .conf/.xywh/.cls indexable:
+            # Boxes cumple eso. Results NO expone .conf directamente.
+            tracked = self._tracker.update(result.boxes, img=frame)
+        except Exception as e:
+            # Desactivar ONNX permanentemente para no repetir la inferencia
+            # (y el fallback) en cada frame.
+            print(f"[WARN] Tracker ONNX falló ({e}) — usando PyTorch desde ahora")
+            self._use_onnx = False
             return self._track_pytorch(frame, frame_number, timestamp, imgsz)
 
         detecciones: list[dict] = []
