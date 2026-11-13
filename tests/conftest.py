@@ -5,7 +5,6 @@ Usa SQLite en memoria para evitar efectos secundarios entre tests.
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -22,7 +21,7 @@ def db_engine():
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,  # Garantiza que todos los hilos usen la misma conexión
+        poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
     yield engine
@@ -43,26 +42,6 @@ def db_session(db_engine):
 def repo(db_session):
     """Instancia de RepositorioEventos usando la sesión en memoria."""
     return RepositorioEventos(db_session)
-
-
-# ─── Fixture de API ───────────────────────────────────────────────────────────
-
-@pytest.fixture
-def test_client(db_session):
-    """
-    TestClient de FastAPI con override de la dependencia de DB
-    para usar la sesión en memoria en lugar de la DB real.
-    """
-    from src.api.main import app
-    from src.database.db import get_session_dep
-
-    def override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_session_dep] = override_get_db
-    client = TestClient(app)
-    yield client
-    app.dependency_overrides.clear()
 
 
 # ─── Fixture de evento de ejemplo ────────────────────────────────────────────

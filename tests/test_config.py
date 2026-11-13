@@ -1,20 +1,14 @@
-"""
-Smoke tests para src/config.py.
-Verifica carga correcta, defaults y fallo en variables faltantes.
-"""
+"""Tests de la configuracion de la aplicacion de escritorio."""
 from __future__ import annotations
 
 import os
-import pytest
 from unittest.mock import patch
+
 from pydantic_settings import SettingsConfigDict
 
 
 def _settings_sin_env_file(**kwargs):
-    """
-    Crea una subclase de Settings que ignora el .env del disco.
-    Necesario para que los tests no lean el .env real del proyecto.
-    """
+    """Crea una subclase de Settings que ignora el .env del disco."""
     from src.config import Settings
 
     class SettingsTest(Settings):
@@ -23,81 +17,43 @@ def _settings_sin_env_file(**kwargs):
     return SettingsTest(**kwargs)
 
 
-def test_settings_carga_con_todas_las_variables():
-    """Settings carga correctamente cuando todas las variables estan definidas."""
-    env = {
-        "VIDEO_PATH": "data/raw/test.mp4",
-        "MODEL_PATH": "models/yolo26n.pt",
-        "DB_URL": "sqlite:///data/test.db",
-        "CONFIDENCE_THRESHOLD": "0.6",
-        "API_HOST": "0.0.0.0",
-        "API_PORT": "9000",
-    }
-    with patch.dict(os.environ, env, clear=True):
+def test_settings_defaults():
+    """Settings funciona sin variables de entorno definidas."""
+    with patch.dict(os.environ, {}, clear=True):
         s = _settings_sin_env_file()
-        assert s.video_path == "data/raw/test.mp4"
-        assert s.model_path == "models/yolo26n.pt"
-        assert s.db_url == "sqlite:///data/test.db"
-        assert s.confidence_threshold == 0.6
-        assert s.api_host == "0.0.0.0"
-        assert s.api_port == 9000
-
-
-def test_confidence_threshold_default():
-    """CONFIDENCE_THRESHOLD usa 0.5 cuando no esta definido."""
-    env = {
-        "VIDEO_PATH": "data/raw/test.mp4",
-        "MODEL_PATH": "models/yolo26n.pt",
-        "DB_URL": "sqlite:///data/test.db",
-    }
-    with patch.dict(os.environ, env, clear=True):
-        s = _settings_sin_env_file()
+        assert s.model_path == "models/best.pt"
+        assert s.db_url == "sqlite:///data/eventos.db"
+        assert s.video_path == ""
         assert s.confidence_threshold == 0.5
+        assert s.track_skip == 3
+        assert s.track_imgsz == 320
 
 
-def test_api_host_port_defaults():
-    """API_HOST y API_PORT usan sus defaults cuando no estan definidos."""
+def test_settings_desde_entorno():
+    """Las variables de entorno sobreescriben los defaults."""
     env = {
-        "VIDEO_PATH": "data/raw/test.mp4",
-        "MODEL_PATH": "models/yolo26n.pt",
-        "DB_URL": "sqlite:///data/test.db",
+        "MODEL_PATH": "models/custom.pt",
+        "DB_URL": "sqlite:///data/custom.db",
+        "CONFIDENCE_THRESHOLD": "0.6",
+        "TRACK_SKIP": "5",
+        "TRACK_IMGSZ": "480",
+        "OCR_HABILITADO": "true",
+        "WINDOW_GEOMETRY": "1024x600",
     }
     with patch.dict(os.environ, env, clear=True):
         s = _settings_sin_env_file()
-        assert s.api_host == "127.0.0.1"
-        assert s.api_port == 8000
+        assert s.model_path == "models/custom.pt"
+        assert s.db_url == "sqlite:///data/custom.db"
+        assert s.confidence_threshold == 0.6
+        assert s.track_skip == 5
+        assert s.track_imgsz == 480
+        assert s.ocr_habilitado is True
+        assert s.window_geometry == "1024x600"
 
 
-@pytest.mark.parametrize("missing_var", ["VIDEO_PATH", "MODEL_PATH", "DB_URL"])
-def test_load_config_falla_si_falta_variable_obligatoria(missing_var, tmp_path):
-    """load_config() lanza SystemExit cuando falta una variable obligatoria."""
-    env = {
-        "VIDEO_PATH": "v.mp4",
-        "MODEL_PATH": "m.pt",
-        "DB_URL": "sqlite:///d.db",
-    }
-    del env[missing_var]
-
-    env_vacio = tmp_path / ".env"
-    env_vacio.write_text("")
-
-    with patch.dict(os.environ, env, clear=True):
-        from pydantic import ValidationError
-        from src.config import Settings
-
-        class SettingsTest(Settings):
-            model_config = SettingsConfigDict(env_file=str(env_vacio))
-
-        from pydantic import ValidationError as VE
-
-        def load_config_test():
-            try:
-                return SettingsTest()
-            except VE as e:
-                for error in e.errors():
-                    field = error.get("loc", ("desconocido",))[0]
-                    print(f"[CONFIG ERROR] Variable {str(field).upper()} no definida")
-                raise SystemExit(1) from e
-
-        with pytest.raises(SystemExit):
-            load_config_test()
+def test_settings_campos_obsoletos_ignorados():
+    """Variables de la antigua API no rompen la configuracion."""
+    with patch.dict(os.environ, {"API_HOST": "0.0.0.0", "CORS_ORIGINS": "*"}, clear=True):
+        s = _settings_sin_env_file()
+        assert not hasattr(s, "api_host")
+        assert not hasattr(s, "cors_origins")

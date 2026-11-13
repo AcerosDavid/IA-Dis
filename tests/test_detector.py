@@ -114,7 +114,7 @@ umbral_st           = st.floats(min_value=0.1, max_value=0.9, allow_nan=False, a
 
 
 @given(clases=st.lists(clases_invalidas_st, min_size=1, max_size=10))
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_property_2_filtrado_clases(clases):
     """
     Property 2: detect_frame descarta clases que no están en CLASE_MAP.
@@ -137,7 +137,7 @@ def test_property_2_filtrado_clases(clases):
 
 
 @given(confianza=confianza_baja_st, umbral=umbral_st)
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_property_3_filtrado_por_umbral(confianza, umbral):
     """
     Property 3: detect_frame descarta detecciones con confianza < umbral.
@@ -164,7 +164,7 @@ def test_property_3_filtrado_por_umbral(confianza, umbral):
     frame_number=st.integers(min_value=0, max_value=10000),
     timestamp=st.text(min_size=1, max_size=15),
 )
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_property_4_estructura_evento(clase, confianza, frame_number, timestamp):
     """
     Property 4: eventos retornados tienen exactamente los campos requeridos

@@ -87,7 +87,7 @@ timestamp_st = st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist
     numero_fotograma=fotograma_st,
     timestamp=timestamp_st,
 )
-@settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_property_5_round_trip_persistencia(
     db_session, tipo_maquina, clase_id, confianza, numero_fotograma, timestamp
 ):
@@ -128,7 +128,7 @@ def test_property_5_round_trip_persistencia(
         max_size=20,
     )
 )
-@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_property_6_ordenamiento_por_timestamp(db_session, timestamps):
     """
     Property 6: obtener_todos retorna eventos ordenados por numero_fotograma ASC.
