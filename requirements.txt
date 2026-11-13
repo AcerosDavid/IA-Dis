@@ -1,4 +1,4 @@
-# Visión artificial y detección YOLO26
+# Vision artificial y deteccion YOLO
 ultralytics>=8.3.0
 opencv-python-headless>=4.10.0
 
@@ -7,25 +7,15 @@ onnxruntime>=1.17.0
 onnx>=1.15.0
 onnxsim>=0.4.33
 
-# Base de datos
+# Base de datos local (SQLite)
 sqlalchemy>=2.0.0
-alembic>=1.13.0
 
-# API REST
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-
-# Configuración
+# Configuracion
 pydantic-settings>=2.5.0
 python-dotenv>=1.0.0
 
-# OCR para números de flota
+# Interfaz de escritorio (mostrar video en Tkinter)
+pillow>=10.0.0
+
+# OCR opcional para numeros de flota
 easyocr>=1.7.0
-
-# Multipart (requerido por FastAPI para UploadFile en /video/analizar)
-python-multipart>=0.0.9
-
-# Testing
-pytest>=8.3.0
-hypothesis>=6.115.0
-httpx>=0.27.0

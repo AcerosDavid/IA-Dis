@@ -1,63 +1,66 @@
 """
-Configuracion centralizada del sistema usando pydantic-settings.
+Configuracion centralizada de la aplicacion de escritorio.
+
 Lee variables de entorno o del archivo .env en la raiz del proyecto.
+Todas las variables tienen valores por defecto: la aplicacion puede abrirse
+sin .env y el usuario selecciona video/modelo desde la interfaz.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Optional
+
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """
-    Configuracion de la aplicacion.
+    """Configuracion de la aplicacion de escritorio."""
 
-    Variables obligatorias:
-      - VIDEO_PATH:  ruta al video de prueba local
-      - MODEL_PATH:  ruta al modelo YOLO26 (.pt)
-      - DB_URL:      URL de conexión a la base de datos
-                     SQLite:     sqlite:///data/eventos.db
-                     MySQL:      mysql+pymysql://user:pass@host:3306/db
-                     PostgreSQL: postgresql+psycopg2://user:pass@host:5432/db
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
-    Variables opcionales:
-      - CONFIDENCE_THRESHOLD: umbral de confianza (default: 0.5)
-      - API_HOST:             host FastAPI (default: 127.0.0.1)
-      - API_PORT:             puerto FastAPI (default: 8000)
-      - CAMERA_SOURCE:        fuente de camara para camera.py
-                              Ejemplos:
-                                0                              -> webcam local
-                                http://192.168.1.X:8080/video -> IP Webcam (Android)
-                                rtsp://usuario:clave@ip/stream -> camara RTSP industrial
-    """
+    # ── Rutas ─────────────────────────────────────────────────────────────────
+    model_path: str = "models/best.pt"
+    db_url: str = "sqlite:///data/eventos.db"
+    # Ruta inicial sugerida para el selector de video (puede quedar vacia).
+    video_path: str = ""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
-
-    # Obligatorias
-    video_path: str
-    model_path: str
-    db_url: str
-
-    # Opcionales
+    # ── Deteccion ─────────────────────────────────────────────────────────────
     confidence_threshold: float = 0.5
-    api_host: str = "127.0.0.1"
-    api_port: int = 8000
-    camera_source: Optional[str] = None   # None = webcam local (indice 0)
+    # Fuente de camara: indice ("0") o URL RTSP/HTTP. None = webcam local.
+    camera_source: Optional[str] = None
+
+    # ── Rendimiento del pipeline (CPU) ────────────────────────────────────────
+    # Procesar 1 de cada N frames. 1 = todos, 3 = recomendado en CPU.
+    track_skip: int = 3
+    # Resolucion de inferencia; 320 es el optimo para CPU.
+    track_imgsz: int = 320
+    # Frames sin ver un track antes de emitir "desaparicion".
+    frames_ausencia: int = 90
+    # Cada cuantos frames procesados se hace COMMIT de la sesion de DB.
+    flush_every_frames: int = 60
+
+    # ── Modulos opcionales ────────────────────────────────────────────────────
+    ocr_habilitado: bool = False
+    clasificador_habilitado: bool = False
+
+    # ── Interfaz ──────────────────────────────────────────────────────────────
+    # Ancho maximo del frame mostrado en la ventana (0 = sin escalar).
+    display_width: int = 960
+    window_geometry: str = "1180x760"
 
 
+@lru_cache(maxsize=1)
 def load_config() -> Settings:
-    """
-    Carga y valida la configuracion desde .env o variables de entorno.
-    Falla rapido si alguna variable obligatoria no esta definida.
-
-    Raises:
-        SystemExit: si faltan variables obligatorias.
-    """
+    """Carga y valida la configuracion. Falla rapido si hay valores invalidos."""
     try:
         return Settings()
     except ValidationError as e:
         for error in e.errors():
             field = error.get("loc", ("desconocido",))[0]
-            print(f"[CONFIG ERROR] Variable {str(field).upper()} no definida o invalida")
+            print(f"[CONFIG ERROR] Variable {str(field).upper()} invalida: {error.get('msg')}")
         raise SystemExit(1) from e
