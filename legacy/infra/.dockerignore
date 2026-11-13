@@ -1,0 +1,54 @@
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git
+.gitattributes
+.gitignore
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+
+# ── Entornos virtuales ────────────────────────────────────────────────────────
+.venv
+venv
+env
+ENV
+
+# ── Tests y herramientas de desarrollo ───────────────────────────────────────
+tests/
+.pytest_cache/
+.hypothesis/
+htmlcov/
+.coverage
+*.cover
+reports/
+
+# ── Datos y videos (se montan como volúmenes en producción) ───────────────────
+data/
+runs/
+
+# ── Secretos locales (se proveen via .env.docker en el servidor) ──────────────
+.env
+
+# ── IDE y OS ──────────────────────────────────────────────────────────────────
+.kiro/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Documentación y scripts de desarrollo ────────────────────────────────────
+README.md
+create_fast_dataset.py
+monitor_train.py
+train.py
+
+# ── Docker mismo (evitar recursión) ──────────────────────────────────────────
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -1,0 +1,106 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Mining Dispatch — Docker Compose
+#
+# Perfiles disponibles:
+#   gpu  (default) → usa la GPU NVIDIA del servidor
+#   cpu            → fallback sin GPU (más lento)
+#
+# Uso rápido:
+#   docker compose up -d                    # con GPU
+#   docker compose --profile cpu up -d      # sin GPU
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── API principal con GPU ───────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mining-dispatch-api:latest
+    container_name: mining-dispatch-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+
+    # ── GPU: reserva toda la GPU disponible ──────────────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # ── Variables de entorno ─────────────────────────────────────────────────
+    env_file:
+      - .env.docker           # copia de .env adaptada para Docker (ver abajo)
+    environment:
+      - DB_URL=sqlite:////app/data/eventos.db
+      - MODEL_PATH=/app/models/best.pt
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+
+    # ── Volúmenes persistentes ───────────────────────────────────────────────
+    volumes:
+      # Base de datos SQLite — persiste entre reinicios
+      - db_data:/app/data
+      # Modelos YOLO — montar desde el host para no recompilar la imagen
+      - ./models:/app/models:ro
+      # Videos subidos temporalmente (se limpian solos)
+      - video_tmp:/tmp/mining_videos
+
+    # ── Red interna ──────────────────────────────────────────────────────────
+    networks:
+      - mining_net
+
+    # ── Health ───────────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/eventos/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Perfil CPU (fallback sin GPU) ───────────────────────────────────────────
+  api-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mining-dispatch-api:latest
+    container_name: mining-dispatch-api-cpu
+    profiles: ["cpu"]
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.docker
+    environment:
+      - DB_URL=sqlite:////app/data/eventos.db
+      - MODEL_PATH=/app/models/best.pt
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    volumes:
+      - db_data:/app/data
+      - ./models:/app/models:ro
+      - video_tmp:/tmp/mining_videos
+    networks:
+      - mining_net
+
+# ── Volúmenes ──────────────────────────────────────────────────────────────────
+volumes:
+  db_data:
+    driver: local
+  video_tmp:
+    driver: local
+
+# ── Red ────────────────────────────────────────────────────────────────────────
+networks:
+  mining_net:
+    driver: bridge
