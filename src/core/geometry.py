@@ -397,10 +397,19 @@ def dibujar_zonas(frame, gestor: GestorGeofencing) -> None:
         if not zona.activa:
             continue
         pts = np.array(zona.vertices, dtype=np.int32)
-        # Relleno semitransparente (efecto de sombra sobre el frame)
-        overlay = frame.copy()
-        cv2.fillPoly(overlay, [pts], zona.color_bgr)
-        cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
+        # Relleno semitransparente (solo ROI de la zona, no todo el frame)
+        bx, by, bw, bh = cv2.boundingRect(pts)
+        fh, fw = frame.shape[:2]
+        bx = max(0, min(bx, fw))
+        by = max(0, min(by, fh))
+        bw = max(0, min(bw, fw - bx))
+        bh = max(0, min(bh, fh - by))
+        if bw > 0 and bh > 0:
+            roi = frame[by:by + bh, bx:bx + bw]
+            overlay = roi.copy()
+            cv2.fillPoly(overlay, [pts - np.array([bx, by], dtype=np.int32)],
+                         zona.color_bgr)
+            cv2.addWeighted(overlay, 0.15, roi, 0.85, 0, roi)
         # Borde
         cv2.polylines(frame, [pts], isClosed=True, color=zona.color_bgr, thickness=2)
         # Etiqueta centrada en el poligono

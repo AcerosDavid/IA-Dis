@@ -110,9 +110,15 @@ class Detector:
       - Evita que contenedores, tolvas y pilas de material aparezcan como camiones
     """
 
-    def __init__(self, model_path: str, confidence_threshold: float = 0.5) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        confidence_threshold: float = 0.5,
+        forzar_cpu: bool = False,
+    ) -> None:
         self.model_path           = model_path
         self.confidence_threshold = confidence_threshold
+        self.forzar_cpu           = forzar_cpu
         self.model                = None
         self._device              = "cpu"
         self._use_onnx            = False
@@ -128,7 +134,7 @@ class Detector:
     # ── Carga ─────────────────────────────────────────────────────────────────
 
     def load_model(self) -> None:
-        cuda = self._cuda_available()
+        cuda = (not self.forzar_cpu) and self._cuda_available()
         if self._tracker_cfg:
             print(f"[INFO] Tracker: BoT-SORT (cfg/botsort_mining.yaml)")
         else:
@@ -165,9 +171,12 @@ class Detector:
             onnx_path = export_to_onnx(self.model_path, imgsz=DEFAULT_IMGSZ)
 
         opts = rt.SessionOptions()
+        # Para inferencia de un solo modelo, SEQUENTIAL con inter=1 es más
+        # rápido que PARALLEL: evita contención de hilos entre grafos.
+        # intra usa todos los núcleos lógicos para paralelizar las ops internas.
         opts.intra_op_num_threads  = os.cpu_count() or 4
-        opts.inter_op_num_threads  = os.cpu_count() or 4
-        opts.execution_mode        = rt.ExecutionMode.ORT_PARALLEL
+        opts.inter_op_num_threads  = 1
+        opts.execution_mode        = rt.ExecutionMode.ORT_SEQUENTIAL
         opts.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         self._ort_session = rt.InferenceSession(

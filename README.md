@@ -51,6 +51,7 @@ cp .env.example .env
 | `TRACK_SKIP` | Procesar 1 de cada N frames | `3` |
 | `TRACK_IMGSZ` | Resolución de inferencia | `320` |
 | `FRAMES_AUSENCIA` | Frames sin ver un track | `90` |
+| `FORZAR_CPU` | Ignorar GPU y usar CPU | `false` |
 | `OCR_HABILITADO` | Leer números de flota | `false` |
 | `CLASIFICADOR_HABILITADO` | Clasificar estado operativo | `false` |
 
@@ -70,6 +71,31 @@ python app.py
 6. **Ver eventos guardados en BD** carga el historial local.
 
 Los eventos se almacenan en `data/eventos.db` (SQLite).
+
+### Exportar el video anotado (modo rápido, sin tiempo real)
+
+Para equipos sin GPU el análisis en vivo puede ir a pocos FPS. Activa
+**▸ Exportar video anotado** antes de pulsar **Iniciar**: el sistema procesa el
+video lo más rápido posible y escribe todos los fotogramas originales con sus
+bounding boxes en un archivo. Al terminar puedes abrirlo con cualquier
+reproductor y se verá fluido (no depende de la velocidad de análisis).
+
+- Ruta sugerida: `data/output/<nombre>_anotado.mp4` (puedes cambiarla).
+- No uses como salida el mismo archivo de entrada: la app lo bloquea para no
+  sobrescribir el video original.
+- Codec: MPEG-4 (`mp4v`), compatible con VLC, Windows Media Player y navegadores.
+- Para acelerar más: sube **SKIP FRAMES** (procesa 1 de cada N frames) y baja
+  **IMGSZ** a `160` o `320`. La fluidez del video final no cambia.
+
+También puedes hacerlo sin abrir la interfaz:
+
+```bash
+python -m scripts.evaluation.analizar_video \
+  --video data/raw/video.mp4 \
+  --model models/best.pt \
+  --output data/output/video_anotado.mp4 \
+  --skip 4 --imgsz 320
+```
 
 ---
 

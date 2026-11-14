@@ -19,3 +19,7 @@ pillow>=10.0.0
 
 # OCR opcional para numeros de flota
 easyocr>=1.7.0
+
+# Reportes PDF y Excel (analisis batch)
+reportlab>=4.0.0
+openpyxl>=3.1.0

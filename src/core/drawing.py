@@ -52,6 +52,40 @@ def _hex_to_bgr(h: str) -> tuple[int, int, int]:
     return (b, g, r)
 
 
+def _roi_rect(
+    frame: np.ndarray,
+    x1: int, y1: int, x2: int, y2: int,
+) -> tuple[np.ndarray, int, int, int, int]:
+    """Recorta el rectangulo indicado (clamp a los limites del frame)."""
+    h, w = frame.shape[:2]
+    x1 = max(0, min(int(x1), w))
+    y1 = max(0, min(int(y1), h))
+    x2 = max(x1, min(int(x2), w))
+    y2 = max(y1, min(int(y2), h))
+    return frame[y1:y2, x1:x2], x1, y1, x2, y2
+
+
+def _blend_rect(
+    frame: np.ndarray,
+    p1: tuple[int, int],
+    p2: tuple[int, int],
+    color: tuple[int, int, int],
+    alpha: float,
+) -> None:
+    """
+    Mezcla semitransparente SOLO sobre el rectangulo indicado.
+
+    Evita `frame.copy()` del frame completo: en videos 1080p con varias
+    detecciones por frame el ahorro de CPU/memoria es enorme.
+    """
+    roi, *_ = _roi_rect(frame, p1[0], p1[1], p2[0], p2[1])
+    if roi.size == 0:
+        return
+    overlay = np.empty_like(roi)
+    overlay[:] = color
+    cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0, roi)
+
+
 def _draw_text_shadowed(
     frame: np.ndarray,
     text: str,
@@ -110,10 +144,8 @@ def dibujar_tracking(
         estado_maq = det.get("estado") or (estados.get(tid) if estados else None)
         color_bbox = ESTADO_COLORES.get(estado_maq, color) if estado_maq else color
 
-        # ── Relleno semitransparente ──────────────────────────────────────────
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), color_bbox, -1)
-        cv2.addWeighted(overlay, 0.07, frame, 0.93, 0, frame)
+        # ── Relleno semitransparente (solo ROI) ───────────────────────────────
+        _blend_rect(frame, (x1, y1), (x2, y2), color_bbox, 0.07)
 
         # ── Borde exterior (doble) ────────────────────────────────────────────
         cv2.rectangle(frame, (x1, y1), (x2, y2), color_bbox, 2)
@@ -148,9 +180,7 @@ def dibujar_tracking(
         px2       = x1 + tw + 2 * pad + 2
 
         # Fondo del panel
-        overlay2  = frame.copy()
-        cv2.rectangle(overlay2, (px1, py1), (px2, y1), (10, 10, 10), -1)
-        cv2.addWeighted(overlay2, 0.80, frame, 0.20, 0, frame)
+        _blend_rect(frame, (px1, py1), (px2, y1), (10, 10, 10), 0.80)
 
         # Borde coloreado del panel
         cv2.rectangle(frame, (px1, py1), (px2, y1), color_bbox, 1)
@@ -175,9 +205,7 @@ def dibujar_tracking(
             ex1, ey1   = x1, y2 + 2
             ex2, ey2   = x1 + ew + 14, y2 + eh + 10
 
-            overlay3 = frame.copy()
-            cv2.rectangle(overlay3, (ex1, ey1), (ex2, ey2), (10, 10, 10), -1)
-            cv2.addWeighted(overlay3, 0.80, frame, 0.20, 0, frame)
+            _blend_rect(frame, (ex1, ey1), (ex2, ey2), (10, 10, 10), 0.80)
             cv2.rectangle(frame, (ex1, ey1), (ex2, ey2), color_est, 1)
             cv2.rectangle(frame, (ex1, ey1), (ex1 + 3, ey2), color_est, -1)
             _draw_text_shadowed(frame, label_est, (ex1 + 8, ey2 - 4),
@@ -213,9 +241,7 @@ def dibujar_panel_flota(frame: np.ndarray, numeros: dict[int, str]) -> None:
     px1, py1 = w - panel_w - 10, 10
     px2, py2 = w - 10, py1 + panel_h
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (px1, py1), (px2, py2), (5, 10, 20), -1)
-    cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+    _blend_rect(frame, (px1, py1), (px2, py2), (5, 10, 20), 0.75)
     cv2.rectangle(frame, (px1, py1), (px2, py2), (255, 180, 0), 1)
     cv2.rectangle(frame, (px1, py1), (px1 + 3, py2), (255, 180, 0), -1)
 
@@ -232,9 +258,7 @@ def dibujar_hud(frame: np.ndarray, texto: str, pausado: bool = False) -> None:
     h, w = frame.shape[:2]
 
     # Panel de fondo HUD
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (min(w, 320), 36), (5, 10, 20), -1)
-    cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
+    _blend_rect(frame, (0, 0), (min(w, 320), 36), (5, 10, 20), 0.65)
 
     # Borde inferior del HUD
     cv2.line(frame, (0, 36), (min(w, 320), 36), (0, 180, 255), 1)
@@ -254,9 +278,9 @@ def dibujar_hud(frame: np.ndarray, texto: str, pausado: bool = False) -> None:
         (pw, ph), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
         bx1 = cx - pw // 2 - 10
         bx2 = cx + pw // 2 + 10
-        overlay2 = frame.copy()
-        cv2.rectangle(overlay2, (bx1, h // 2 - 25), (bx2, h // 2 + 20), (10, 10, 10), -1)
-        cv2.addWeighted(overlay2, 0.80, frame, 0.20, 0, frame)
+        _blend_rect(
+            frame, (bx1, h // 2 - 25), (bx2, h // 2 + 20), (10, 10, 10), 0.80,
+        )
         cv2.rectangle(frame, (bx1, h // 2 - 25), (bx2, h // 2 + 20), (0, 200, 255), 2)
         _draw_text_shadowed(frame, "PAUSADO", (bx1 + 15, h // 2 + 12),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 220, 255), 2)

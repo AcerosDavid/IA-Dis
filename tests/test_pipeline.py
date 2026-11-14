@@ -83,3 +83,6 @@ def test_opciones_analisis_defaults():
     assert op.usar_clasificador is False
     assert op.track_skip == 3
     assert op.track_imgsz == 320
+    assert op.exportar_video is False
+    assert op.ruta_salida == ""
+    assert op.max_frames == 0

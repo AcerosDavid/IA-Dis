@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     frames_ausencia: int = 90
     # Cada cuantos frames procesados se hace COMMIT de la sesion de DB.
     flush_every_frames: int = 60
+    # Forzar CPU aunque exista GPU (util en equipos con GPU debil).
+    forzar_cpu: bool = False
 
     # ── Modulos opcionales ────────────────────────────────────────────────────
     ocr_habilitado: bool = False
@@ -52,6 +54,16 @@ class Settings(BaseSettings):
     # Ancho maximo del frame mostrado en la ventana (0 = sin escalar).
     display_width: int = 960
     window_geometry: str = "1180x760"
+
+    # ── Análisis batch (procesamiento offline) ────────────────────────────────
+    # Carpeta donde se guardan copias de los videos cargados por el usuario.
+    videos_dir: str = "data/videos"
+    # Carpeta donde se guardan los videos anotados (salida del análisis).
+    output_dir: str = "data/output"
+    # Carpeta donde se guardan los reportes PDF y Excel.
+    reports_dir: str = "data/reports"
+    # Máximo de trabajos procesándose simultáneamente (1 = sin paralelismo).
+    max_jobs_simultaneos: int = 1
 
 
 @lru_cache(maxsize=1)

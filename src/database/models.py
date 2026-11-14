@@ -2,10 +2,11 @@
 Modelos ORM de la base de datos local (SQLite por defecto).
 
 Tablas del nucleo operativo:
-  - eventos : detecciones de maquinaria (aparicion/desaparicion por frame)
-  - zonas   : zonas operativas para geofencing
-  - ciclos  : ciclos de carga/descarga construidos a partir de las zonas
-  - turnos  : turnos de trabajo
+  - eventos    : detecciones de maquinaria (aparicion/desaparicion por frame)
+  - zonas      : zonas operativas para geofencing
+  - ciclos     : ciclos de carga/descarga construidos a partir de las zonas
+  - turnos     : turnos de trabajo
+  - video_jobs : trabajos de analisis batch (nuevo)
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -106,3 +108,65 @@ class Turno(Base):
 
     def __repr__(self) -> str:
         return f"Turno(id={self.id!r}, tipo={self.tipo!r}, fecha={self.fecha!r}, activo={self.activo!r})"
+
+
+class VideoJob(Base):
+    """Trabajo de analisis batch de un video.
+
+    Estado: pendiente -> procesando -> generando_video -> completado | error
+    """
+
+    __tablename__ = "video_jobs"
+
+    id                 = Column(Integer, primary_key=True, autoincrement=True)
+    nombre_original    = Column(String,  nullable=False)
+    ruta_original      = Column(String,  nullable=False)   # copia local en data/videos/
+    ruta_salida        = Column(String,  nullable=True)    # video anotado en data/output/
+    ruta_reporte_pdf   = Column(String,  nullable=True)    # data/reports/*.pdf
+    ruta_reporte_xlsx   = Column(String,  nullable=True)    # data/reports/*.xlsx
+
+    # Estado del trabajo
+    estado             = Column(String,  nullable=False, default="pendiente")
+    # pendiente | procesando | generando_video | completado | error | cancelado
+
+    # Progreso (0-100)
+    progreso           = Column(Float,   nullable=False, default=0.0)
+    frame_actual        = Column(Integer, nullable=False, default=0)
+    total_frames       = Column(Integer, nullable=False, default=0)
+    fps_video          = Column(Float,   nullable=False, default=0.0)
+
+    # Metadatos del video original
+    duracion_seg       = Column(Float,   nullable=True)
+    resolucion         = Column(String,  nullable=True)   # "WxH"
+    fps_originales     = Column(Float,   nullable=True)
+
+    # Configuracion usada
+    modelo             = Column(String,  nullable=True)
+    confianza_umbral   = Column(Float,   nullable=True)
+    track_skip         = Column(Integer, nullable=True)
+    track_imgsz        = Column(Integer, nullable=True)
+    dispositivo        = Column(String,  nullable=True)   # cpu | cuda
+    guardar_db         = Column(Boolean, nullable=False, default=True)
+    usar_ocr           = Column(Boolean, nullable=False, default=False)
+    usar_clasificador  = Column(Boolean, nullable=False, default=False)
+
+    # Resultados
+    total_detecciones   = Column(Integer, nullable=True)
+    total_eventos       = Column(Integer, nullable=True)
+    total_unicos        = Column(Integer, nullable=True)
+    confianza_promedio  = Column(Float,   nullable=True)
+    tiempo_procesamiento = Column(Float,   nullable=True)  # segundos
+
+    # Errores
+    error_msg          = Column(Text,    nullable=True)
+
+    # Timestamps
+    creado_en          = Column(String,  nullable=False)   # ISO datetime
+    iniciado_en        = Column(String,  nullable=True)
+    finalizado_en      = Column(String,  nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"VideoJob(id={self.id!r}, nombre={self.nombre_original!r}, "
+            f"estado={self.estado!r}, progreso={self.progreso!r})"
+        )

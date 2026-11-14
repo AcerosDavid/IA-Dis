@@ -1,15 +1,16 @@
 """
-Interfaz de escritorio (Tkinter) del sistema de despacho minero.
-Diseño avanzado estilo HUD / tecnología de análisis en tiempo real.
+Interfaz de escritorio para análisis de video con IA.
+
+Una sola ventana: cargar video → analiza en segundo plano → muestra
+el resultado ahí mismo. Sin pestañas, sin preguntar rutas, con historial.
 """
 from __future__ import annotations
 
-import math
 import os
-import queue
 import sys
 import time
 from pathlib import Path
+
 
 def _configurar_tcl_tk() -> None:
     base = Path(sys.base_prefix)
@@ -19,24 +20,25 @@ def _configurar_tcl_tk() -> None:
                 os.environ["TCL_LIBRARY"] = str(candidato)
                 break
     if not os.environ.get("TK_LIBRARY"):
-        for candidato in (base / "tcl" / "tk8.6", base / "lib" / "tk8.6"):
+        for candidato in (base / "tk" / "tk8.6", base / "lib" / "tk8.6"):
             if (candidato / "tk.tcl").exists():
                 os.environ["TK_LIBRARY"] = str(candidato)
                 break
+
 
 _configurar_tcl_tk()
 
 RAIZ_PROYECTO = Path(__file__).resolve().parents[2]
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
 
+from src.batch.jobs import GestorJobs
 from src.config import load_config
-from src.database.db import RepositorioEventos, get_session, migrate
-from src.pipeline.runner import EventoUI, OpcionesAnalisis, Procesador
+from src.pipeline.runner import EventoUI
 
 try:
     from PIL import Image, ImageTk
@@ -45,410 +47,106 @@ except ImportError:
     ImageTk = None
 
 
-# ── Paleta de colores ─────────────────────────────────────────────────────────
+# ── Tema claro, simple y accesible ──────────────────────────────────────────────
 
-C = {
-    # Fondos
-    "bg_deep":    "#050810",
-    "bg_main":    "#080d1a",
-    "bg_panel":   "#0c1222",
-    "bg_card":    "#101828",
-    "bg_hover":   "#1a2540",
-    # Neones principales
-    "cyan":       "#00d4ff",
-    "cyan_dim":   "#0088aa",
-    "cyan_dark":  "#003344",
-    "green":      "#00ff88",
-    "green_dim":  "#00aa55",
-    "green_dark": "#003322",
-    "magenta":    "#ff00aa",
-    "magenta_dim":"#aa0066",
-    "yellow":     "#ffcc00",
-    "yellow_dim": "#aa8800",
-    "orange":     "#ff6600",
-    "red":        "#ff2244",
-    "red_dim":    "#882233",
-    # Texto
-    "text_hi":    "#e8f4ff",
-    "text_mid":   "#7a9cbf",
-    "text_lo":    "#3a5070",
-    "text_green": "#00ff88",
-    "text_cyan":  "#00d4ff",
-    # Bordes
-    "border":     "#1e3050",
-    "border_hi":  "#00d4ff",
-    "border_dim": "#0d1e35",
+T = {
+    "bg":           "#eef1f6",
+    "panel":        "#ffffff",
+    "panel_alt":    "#f7f8fa",
+    "border":       "#dfe3e8",
+    "text":         "#1e293b",
+    "text_dim":     "#64748b",
+    "accent":       "#2563eb",
+    "accent_light": "#dbeafe",
+    "success":      "#16a34a",
+    "success_light":"#dcfce7",
+    "warning":      "#d97706",
+    "warning_light":"#fef3c7",
+    "danger":       "#dc2626",
+    "danger_light": "#fee2e2",
+    "track":        "#e2e8f0",
 }
 
-# Colores de tipo de evento
+ESTADO_INFO = {
+    "pendiente":       ("En espera",      T["text_dim"],   "◐"),
+    "procesando":      ("Analizando...",   T["accent"],    "▶"),
+    "generando_video": ("Generando video", T["accent"],    "◈"),
+    "completado":      ("Completado",      T["success"],   "✓"),
+    "error":           ("Error",           T["danger"],    "✗"),
+    "cancelado":       ("Cancelado",       T["warning"],   "⊘"),
+}
+
 TIPO_COLOR = {
-    "APARICION":   C["green"],
-    "DESAPARICION": C["red"],
-    "ZONA":        C["yellow"],
+    "APARICION":   T["success"],
+    "DESAPARICION": T["danger"],
+    "ZONA":        T["warning"],
 }
 
 
-# ── Helpers de widgets ────────────────────────────────────────────────────────
+# ── Helpers simples ─────────────────────────────────────────────────────────────
 
-def _frame(parent, **kw) -> tk.Frame:
-    return tk.Frame(parent, bg=kw.pop("bg", C["bg_panel"]), **kw)
-
-
-def _label(parent, text="", textvariable=None, font=None, fg=None, bg=None, **kw) -> tk.Label:
-    return tk.Label(
-        parent,
-        text=text,
-        textvariable=textvariable,
-        font=font or ("Consolas", 10),
-        fg=fg or C["text_mid"],
-        bg=bg or C["bg_panel"],
-        **kw,
-    )
+def btn(parent, text, command, color="accent", width=None):
+    """Botón plano limpio."""
+    bg = T.get(color, T["accent"])
+    b = tk.Button(parent, text=text, command=command, font=("Segoe UI", 9),
+                  bg=bg, fg="white", activebackground=bg, activeforeground="white",
+                  bd=0, relief="flat", padx=14, pady=7, cursor="hand2")
+    if width:
+        b.configure(width=width)
+    return b
 
 
-def _separator(parent, orient="horizontal", color=None) -> tk.Canvas:
-    color = color or C["border"]
-    if orient == "horizontal":
-        c = tk.Canvas(parent, height=1, bg=C["bg_panel"], highlightthickness=0)
-        c.bind("<Configure>", lambda e: (c.delete("all"), c.create_line(0, 0, e.width, 0, fill=color)))
-    else:
-        c = tk.Canvas(parent, width=1, bg=C["bg_panel"], highlightthickness=0)
-        c.bind("<Configure>", lambda e: (c.delete("all"), c.create_line(0, 0, 0, e.height, fill=color)))
-    return c
+def lbl(parent, text="", font=("Segoe UI", 9), fg=None, bg=None, **kw):
+    return tk.Label(parent, text=text, font=font,
+                    fg=fg or T["text"], bg=bg or T["panel"], **kw)
 
 
-class _NeonButton(tk.Frame):
-    """Botón con borde neón y efecto hover."""
-
-    def __init__(self, parent, text, command, color=None, disabled=False, **kw):
-        self._color  = color or C["cyan"]
-        self._dim    = C["cyan_dim"]
-        self._active = not disabled
-        super().__init__(parent, bg=C["bg_panel"], bd=0, highlightthickness=0)
-
-        self._inner = tk.Frame(self, bg=C["bg_card"], bd=0, highlightthickness=1,
-                               highlightbackground=self._dim if not disabled else C["border"])
-        self._inner.pack(fill="both", expand=True)
-
-        self._lbl = tk.Label(
-            self._inner, text=text,
-            font=("Consolas", 9, "bold"),
-            fg=(self._dim if not disabled else C["text_lo"]),
-            bg=C["bg_card"],
-            padx=14, pady=5, cursor="hand2" if not disabled else "arrow",
-        )
-        self._lbl.pack(fill="both", expand=True)
-
-        self._cmd = command
-        if not disabled:
-            for w in (self._inner, self._lbl):
-                w.bind("<Enter>",    self._on_enter)
-                w.bind("<Leave>",    self._on_leave)
-                w.bind("<Button-1>", self._on_click)
-                w.bind("<ButtonRelease-1>", self._on_release)
-
-    def _on_enter(self, _):
-        if not self._active:
-            return
-        self._inner.configure(highlightbackground=self._color)
-        self._lbl.configure(fg=self._color, bg=C["bg_hover"])
-        self._inner.configure(bg=C["bg_hover"])
-
-    def _on_leave(self, _):
-        if not self._active:
-            return
-        self._inner.configure(highlightbackground=self._dim, bg=C["bg_card"])
-        self._lbl.configure(fg=self._dim, bg=C["bg_card"])
-
-    def _on_click(self, _):
-        if self._active:
-            self._lbl.configure(bg=self._color, fg=C["bg_deep"])
-            self._inner.configure(bg=self._color)
-
-    def _on_release(self, _):
-        if self._active:
-            self._on_enter(None)
-            self._cmd()
-
-    def set_state(self, state: str):
-        enabled = state != "disabled"
-        self._active = enabled
-        for w in (self._inner, self._lbl):
-            for ev in ("<Enter>", "<Leave>", "<Button-1>", "<ButtonRelease-1>"):
-                w.unbind(ev)
-        if enabled:
-            for w in (self._inner, self._lbl):
-                w.bind("<Enter>",    self._on_enter)
-                w.bind("<Leave>",    self._on_leave)
-                w.bind("<Button-1>", self._on_click)
-                w.bind("<ButtonRelease-1>", self._on_release)
-            self._inner.configure(highlightbackground=self._dim, bg=C["bg_card"])
-            self._lbl.configure(fg=self._dim, bg=C["bg_card"], cursor="hand2")
-        else:
-            self._inner.configure(highlightbackground=C["border"], bg=C["bg_card"])
-            self._lbl.configure(fg=C["text_lo"], bg=C["bg_card"], cursor="arrow")
-
-    def set_text(self, text: str):
-        self._lbl.configure(text=text)
+def seccion(parent, titulo):
+    """Cabecera de sección con título y línea separadora."""
+    f = tk.Frame(parent, bg=T["panel"])
+    f.pack(fill="x")
+    lbl(f, text=titulo, font=("Segoe UI", 9, "bold"), fg=T["text"]).pack(anchor="w")
+    tk.Frame(f, bg=T["border"], height=1).pack(fill="x", pady=(3, 0))
+    return f
 
 
-class _StatCard(tk.Frame):
-    """Tarjeta de estadística con valor grande y etiqueta pequeña."""
-
-    def __init__(self, parent, label, color=None, width=100):
-        self._color = color or C["cyan"]
-        super().__init__(parent, bg=C["bg_card"], bd=0,
-                         highlightthickness=1, highlightbackground=C["border"],
-                         width=width)
-        self.pack_propagate(False)
-
-        tk.Label(self, text=label.upper(), font=("Consolas", 7),
-                 fg=self._color, bg=C["bg_card"]).pack(pady=(6, 0))
-
-        self._val_var = tk.StringVar(value="0")
-        tk.Label(self, textvariable=self._val_var,
-                 font=("Consolas", 20, "bold"),
-                 fg=self._color, bg=C["bg_card"]).pack()
-
-        self._sub_var = tk.StringVar(value="")
-        tk.Label(self, textvariable=self._sub_var,
-                 font=("Consolas", 7),
-                 fg=C["text_lo"], bg=C["bg_card"]).pack(pady=(0, 6))
-
-    def update(self, value: str, sub: str = ""):
-        self._val_var.set(value)
-        self._sub_var.set(sub)
-
-    def flash(self):
-        """Parpadeo rápido para indicar nuevo evento."""
-        self.configure(highlightbackground=self._color)
-        self.after(200, lambda: self.configure(highlightbackground=C["border"]))
-
-
-class _FpsGraph(tk.Canvas):
-    """Mini gráfica de barras con historial de FPS."""
-
-    MAX_SAMPLES = 60
-
-    def __init__(self, parent, **kw):
-        super().__init__(parent, bg=C["bg_card"], highlightthickness=0,
-                         height=48, **kw)
-        self._samples: list[float] = []
-        self._max_fps = 30.0
-        self.bind("<Configure>", lambda _: self._redraw())
-
-    def push(self, fps: float):
-        self._samples.append(fps)
-        if len(self._samples) > self.MAX_SAMPLES:
-            self._samples.pop(0)
-        self._max_fps = max(30.0, max(self._samples) * 1.1)
-        self._redraw()
-
-    def _redraw(self):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w < 2 or not self._samples:
-            return
-
-        # Grid horizontal
-        for y_pct in (0.25, 0.5, 0.75):
-            y = int(h * (1 - y_pct))
-            self.create_line(0, y, w, y, fill=C["border_dim"], dash=(2, 4))
-
-        # Barras
-        n = len(self._samples)
-        bar_w = max(1, w // self.MAX_SAMPLES)
-        for i, fps in enumerate(self._samples):
-            x = i * bar_w
-            bar_h = int((fps / self._max_fps) * h)
-            # Gradiente de color según FPS
-            ratio = fps / self._max_fps
-            if ratio > 0.6:
-                color = C["green"]
-            elif ratio > 0.3:
-                color = C["yellow"]
-            else:
-                color = C["red"]
-            self.create_rectangle(x, h - bar_h, x + bar_w - 1, h,
-                                  fill=color, outline="")
-
-        # Valor actual
-        cur = f"{self._samples[-1]:.1f} FPS"
-        self.create_text(w - 4, 4, text=cur, anchor="ne",
-                         font=("Consolas", 8), fill=C["text_cyan"])
-
-
-class _LogTerminal(tk.Frame):
-    """Terminal de log estilo hacker con scroll."""
-
-    MAX_LINES = 200
-
-    def __init__(self, parent, **kw):
-        super().__init__(parent, bg=C["bg_deep"], bd=0,
-                         highlightthickness=1, highlightbackground=C["border"],
-                         **kw)
-        self._text = tk.Text(
-            self,
-            bg=C["bg_deep"], fg=C["green"],
-            font=("Consolas", 8),
-            state="disabled",
-            wrap="word",
-            bd=0, highlightthickness=0,
-            insertbackground=C["green"],
-            selectbackground=C["cyan_dark"],
-        )
-        sb = tk.Scrollbar(self, bg=C["bg_panel"], troughcolor=C["bg_deep"],
-                          activebackground=C["cyan_dim"],
-                          command=self._text.yview)
-        self._text.configure(yscrollcommand=sb.set)
-
-        # Tags de color
-        self._text.tag_configure("ts",         foreground=C["text_lo"])
-        self._text.tag_configure("aparicion",  foreground=C["green"])
-        self._text.tag_configure("desaparicion", foreground=C["red"])
-        self._text.tag_configure("zona",       foreground=C["yellow"])
-        self._text.tag_configure("info",       foreground=C["cyan"])
-        self._text.tag_configure("error",      foreground=C["magenta"])
-
-        sb.pack(side="right", fill="y")
-        self._text.pack(side="left", fill="both", expand=True)
-
-    def log(self, msg: str, tag: str = "info"):
-        ts = time.strftime("%H:%M:%S")
-        self._text.configure(state="normal")
-        # Límite de líneas
-        lines = int(self._text.index("end-1c").split(".")[0])
-        if lines > self.MAX_LINES:
-            self._text.delete("1.0", "10.0")
-        self._text.insert("end", f"[{ts}] ", "ts")
-        self._text.insert("end", msg + "\n", tag)
-        self._text.configure(state="disabled")
-        self._text.yview_moveto(1.0)
-
-
-class _EventTable(tk.Frame):
-    """Tabla de eventos con colores por tipo."""
-
-    COLS = [
-        ("hora",     "HORA",    80),
-        ("tipo",     "TIPO",    90),
-        ("maquina",  "MÁQ",     65),
-        ("id",       "ID",      35),
-        ("conf",     "CONF",    48),
-        ("zona",     "ZONA",    90),
-    ]
-
-    def __init__(self, parent, **kw):
-        super().__init__(parent, bg=C["bg_panel"], **kw)
-
-        # Cabecera
-        hdr = tk.Frame(self, bg=C["bg_card"])
-        hdr.pack(fill="x")
-        for _, titulo, ancho in self.COLS:
-            tk.Label(hdr, text=titulo, font=("Consolas", 7, "bold"),
-                     fg=C["cyan"], bg=C["bg_card"],
-                     width=max(1, ancho // 7), anchor="w").pack(side="left", padx=2, pady=3)
-
-        _separator(self, color=C["border_hi"]).pack(fill="x")
-
-        # Canvas + scrollbar para las filas
-        container = tk.Frame(self, bg=C["bg_panel"])
-        container.pack(fill="both", expand=True)
-
-        self._canvas = tk.Canvas(container, bg=C["bg_panel"],
-                                 highlightthickness=0)
-        sb = tk.Scrollbar(container, orient="vertical",
-                          command=self._canvas.yview,
-                          bg=C["bg_panel"], troughcolor=C["bg_deep"],
-                          activebackground=C["cyan_dim"])
-        self._canvas.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self._canvas.pack(side="left", fill="both", expand=True)
-
-        self._inner = tk.Frame(self._canvas, bg=C["bg_panel"])
-        self._win_id = self._canvas.create_window((0, 0), window=self._inner,
-                                                  anchor="nw")
-        self._inner.bind("<Configure>", self._on_inner_configure)
-        self._canvas.bind("<Configure>", self._on_canvas_configure)
-
-        self._rows: list[tk.Frame] = []
-
-    def _on_inner_configure(self, _):
-        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
-
-    def _on_canvas_configure(self, e):
-        self._canvas.itemconfigure(self._win_id, width=e.width)
-
-    def insertar(self, ev: EventoUI):
-        color = TIPO_COLOR.get(ev.tipo, C["text_mid"])
-        conf_str = f"{ev.confianza:.2f}" if ev.confianza is not None else "—"
-        vals = [
-            ev.timestamp, ev.tipo, ev.maquina,
-            str(ev.track_id), conf_str, ev.zona or "—",
-        ]
-        # Fila alternada
-        odd = len(self._rows) % 2 == 0
-        row_bg = C["bg_card"] if odd else C["bg_deep"]
-
-        row = tk.Frame(self._inner, bg=row_bg)
-        row.pack(fill="x")
-        for val, (_, _, ancho) in zip(vals, self.COLS):
-            tk.Label(row, text=val, font=("Consolas", 8),
-                     fg=color, bg=row_bg,
-                     width=max(1, ancho // 7), anchor="w").pack(side="left", padx=2, pady=1)
-
-        self._rows.append(row)
-        # Límite de 300 filas
-        if len(self._rows) > 300:
-            oldest = self._rows.pop(0)
-            oldest.destroy()
-
-        self._canvas.update_idletasks()
-        self._canvas.yview_moveto(1.0)
-
-    def limpiar(self):
-        for r in self._rows:
-            r.destroy()
-        self._rows.clear()
-
-
-# ── Ventana principal ─────────────────────────────────────────────────────────
+# ── Ventana principal ──────────────────────────────────────────────────────────
 
 class AplicacionDesk(tk.Tk):
-    """Ventana principal con diseño HUD avanzado."""
-
-    POLL_MS = 40
 
     def __init__(self) -> None:
         super().__init__()
         self.config_app = load_config()
 
-        self.title("MINING DISPATCH  //  AI VISION SYSTEM v2.0")
-        self.geometry(self.config_app.window_geometry)
-        self.minsize(1100, 700)
-        self.configure(bg=C["bg_deep"])
-        self._aplicar_icono()
+        self.title("Análisis de Video con IA")
+        self.geometry("1200x720")
+        self.minsize(900, 600)
+        self.configure(bg=T["bg"])
+        self._icono()
 
-        self._procesador: Procesador | None = None
-        self._fuente: str | int | None = self.config_app.video_path or None
-        self._photo: "ImageTk.PhotoImage | None" = None
-        self._finalizado_avisado = False
-        self._poll_programado = False
-        self._t_inicio: float = 0.0
+        # Estado
+        self._gestor: GestorJobs | None = None
+        self._job_actual: int | None = None
+        self._poll_id = None
+        self._t_inicio = 0.0
+        self._cargando = False  # evita doble carga
 
-        # Animación del header
-        self._anim_tick = 0
-        self._scan_offset = 0
+        # Player
+        self._player_cap = None
+        self._player_playing = False
+        self._player_frame = 0
+        self._player_total = 0
+        self._player_fps = 30.0
+        self._player_after = None
+        self._player_photo = None
 
-        self._crear_variables()
-        self._construir_ui()
-        self._animar_header()
+        self._crear_ui()
         self.protocol("WM_DELETE_WINDOW", self._cerrar)
 
-    # ── Icono ─────────────────────────────────────────────────────────────────
+        # Inicializar gestor diferido
+        self.after(100, self._init_gestor)
 
-    def _aplicar_icono(self) -> None:
+    def _icono(self) -> None:
         icono = RAIZ_PROYECTO / "logo.ico"
         if sys.platform == "win32" and icono.exists():
             try:
@@ -456,710 +154,675 @@ class AplicacionDesk(tk.Tk):
             except tk.TclError:
                 pass
 
-    # ── Variables ─────────────────────────────────────────────────────────────
+    def _init_gestor(self) -> None:
+        try:
+            self._gestor = GestorJobs(self.config_app)
+            self._refrescar_historial()
+            self._iniciar_poll()
+        except Exception as e:
+            print(f"[UI] Error inicializando gestor: {e}")
 
-    def _crear_variables(self) -> None:
-        self.var_fuente     = tk.StringVar(value=self._texto_fuente())
-        self.var_estado     = tk.StringVar(value="SISTEMA LISTO")
-        self.var_guardar_db = tk.BooleanVar(value=True)
-        self.var_ocr        = tk.BooleanVar(value=self.config_app.ocr_habilitado)
-        self.var_clasif     = tk.BooleanVar(value=self.config_app.clasificador_habilitado)
-        self.var_skip       = tk.StringVar(value=str(self.config_app.track_skip))
-        self.var_imgsz      = tk.StringVar(value=str(self.config_app.track_imgsz))
+    # ── Construcción de la UI ──────────────────────────────────────────────────
 
-    # ── Construcción de la UI ─────────────────────────────────────────────────
-
-    def _construir_ui(self) -> None:
+    def _crear_ui(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        self._construir_header()
-        self._construir_cuerpo()
-        self._construir_statusbar()
+        self._toolbar()
+        self._cuerpo()
+        self._barra_eventos()
 
-    # ── HEADER ────────────────────────────────────────────────────────────────
+    def _toolbar(self) -> None:
+        bar = tk.Frame(self, bg=T["panel"], height=54)
+        bar.grid(row=0, column=0, sticky="ew")
+        bar.pack_propagate(False)
 
-    def _construir_header(self) -> None:
-        hdr = tk.Frame(self, bg=C["bg_main"], bd=0,
-                       highlightthickness=1, highlightbackground=C["border"])
-        hdr.grid(row=0, column=0, sticky="ew")
-        hdr.columnconfigure(1, weight=1)
+        tk.Frame(bar, bg=T["border"], height=1).pack(side="bottom", fill="x")
 
-        # Logo / título
-        logo_f = tk.Frame(hdr, bg=C["bg_main"])
-        logo_f.grid(row=0, column=0, padx=14, pady=8, sticky="w")
+        inner = tk.Frame(bar, bg=T["panel"])
+        inner.pack(fill="x", padx=12, pady=8)
 
-        tk.Label(logo_f, text="▶ MINING DISPATCH", font=("Consolas", 14, "bold"),
-                 fg=C["cyan"], bg=C["bg_main"]).pack(side="left")
-        tk.Label(logo_f, text="  AI VISION SYSTEM", font=("Consolas", 9),
-                 fg=C["text_lo"], bg=C["bg_main"]).pack(side="left", padx=(4, 0))
+        self.b_cargar = btn(inner, "Cargar Video", self._cargar_video, "success")
+        self.b_cargar.pack(side="left", padx=(0, 6))
 
-        # Indicadores de estado (LEDs animados)
-        self._leds_frame = tk.Frame(hdr, bg=C["bg_main"])
-        self._leds_frame.grid(row=0, column=1, padx=10, pady=8, sticky="w")
+        self.b_detener = btn(inner, "Detener", self._detener, "danger")
+        self.b_detener.pack(side="left", padx=6)
+        self.b_detener.configure(state="disabled", bg=T["border"],
+                                   fg=T["text_dim"], activebackground=T["border"])
 
-        self._led_proc  = self._crear_led(self._leds_frame, "PROCESANDO")
-        self._led_track = self._crear_led(self._leds_frame, "TRACKING")
-        self._led_db    = self._crear_led(self._leds_frame, "BASE DATOS")
+        self.b_eliminar = btn(inner, "Eliminar", self._eliminar, "danger")
+        self.b_eliminar.pack(side="left", padx=6)
+        self.b_eliminar.configure(state="disabled", bg=T["border"],
+                                    fg=T["text_dim"], activebackground=T["border"])
 
-        # Fuente seleccionada
-        src_f = tk.Frame(hdr, bg=C["bg_main"])
-        src_f.grid(row=0, column=2, padx=14, pady=8, sticky="e")
+        self.var_fuente = tk.StringVar(value="Sin video cargado")
+        lbl(inner, textvariable=self.var_fuente, font=("Segoe UI", 9),
+            fg=T["text_dim"]).pack(side="left", padx=16)
 
-        tk.Label(src_f, text="SRC:", font=("Consolas", 8),
-                 fg=C["text_lo"], bg=C["bg_main"]).pack(side="left")
-        tk.Label(src_f, textvariable=self.var_fuente,
-                 font=("Consolas", 8), fg=C["cyan_dim"],
-                 bg=C["bg_main"]).pack(side="left", padx=4)
-
-        # Botones de control
-        ctrl_f = tk.Frame(hdr, bg=C["bg_main"])
-        ctrl_f.grid(row=0, column=3, padx=8, pady=6, sticky="e")
-
-        _NeonButton(ctrl_f, "[ VIDEO ]", self._abrir_video,
-                    color=C["cyan"]).pack(side="left", padx=3)
-        _NeonButton(ctrl_f, "[ CÁMARA ]", self._usar_camara,
-                    color=C["cyan"]).pack(side="left", padx=3)
-
-        _separator_v = tk.Frame(ctrl_f, bg=C["border"], width=1)
-        _separator_v.pack(side="left", fill="y", padx=6)
-
-        self.btn_iniciar = _NeonButton(ctrl_f, "[ INICIAR ]", self._iniciar,
-                                       color=C["green"])
-        self.btn_iniciar.pack(side="left", padx=3)
-
-        self.btn_pausar = _NeonButton(ctrl_f, "[ PAUSAR ]", self._pausar,
-                                      color=C["yellow"])
-        self.btn_pausar.pack(side="left", padx=3)
-        self.btn_pausar.set_state("disabled")
-
-        self.btn_detener = _NeonButton(ctrl_f, "[ DETENER ]", self._detener,
-                                       color=C["red"])
-        self.btn_detener.pack(side="left", padx=3)
-
-        # Reloj en tiempo real
-        self._reloj_var = tk.StringVar(value="00:00:00")
-        tk.Label(hdr, textvariable=self._reloj_var,
-                 font=("Consolas", 11, "bold"),
-                 fg=C["text_lo"], bg=C["bg_main"],
-                 padx=12).grid(row=0, column=4, sticky="e")
-        self._tick_reloj()
-
-    def _crear_led(self, parent, label: str) -> tk.Label:
-        f = tk.Frame(parent, bg=C["bg_main"])
-        f.pack(side="left", padx=8)
-        led = tk.Label(f, text="●", font=("Consolas", 10),
-                       fg=C["border"], bg=C["bg_main"])
-        led.pack(side="left")
-        tk.Label(f, text=label, font=("Consolas", 7),
-                 fg=C["text_lo"], bg=C["bg_main"]).pack(side="left", padx=(2, 0))
-        return led
-
-    def _tick_reloj(self) -> None:
-        self._reloj_var.set(time.strftime("%H:%M:%S"))
-        self.after(1000, self._tick_reloj)
-
-    # ── CUERPO ────────────────────────────────────────────────────────────────
-
-    def _construir_cuerpo(self) -> None:
-        cuerpo = tk.Frame(self, bg=C["bg_deep"])
-        cuerpo.grid(row=1, column=0, sticky="nsew")
+    def _cuerpo(self) -> None:
+        cuerpo = tk.Frame(self, bg=T["bg"])
+        cuerpo.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
         cuerpo.columnconfigure(0, weight=3)
-        cuerpo.columnconfigure(1, weight=0)
+        cuerpo.columnconfigure(1, weight=0, minsize=300)
         cuerpo.rowconfigure(0, weight=1)
 
-        self._construir_panel_video(cuerpo)
-        self._construir_panel_derecho(cuerpo)
+        self._panel_video(cuerpo)
+        self._panel_lateral(cuerpo)
 
-    # ── Panel de video ────────────────────────────────────────────────────────
+    # ── Panel de video (izquierda) ─────────────────────────────────────────────
 
-    def _construir_panel_video(self, parent) -> None:
-        video_outer = tk.Frame(parent, bg=C["bg_deep"],
-                               highlightthickness=1, highlightbackground=C["border"])
-        video_outer.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
-        video_outer.columnconfigure(0, weight=1)
-        video_outer.rowconfigure(1, weight=1)
+    def _panel_video(self, parent) -> None:
+        cont = tk.Frame(parent, bg=T["panel"], highlightthickness=1,
+                       highlightbackground=T["border"])
+        cont.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        cont.columnconfigure(0, weight=1)
+        cont.rowconfigure(0, weight=1)
 
-        # Mini barra superior del panel de video
-        vid_hdr = tk.Frame(video_outer, bg=C["bg_card"])
-        vid_hdr.grid(row=0, column=0, sticky="ew")
-
-        tk.Label(vid_hdr, text="◈ FEED EN VIVO  //  ANÁLISIS YOLO",
-                 font=("Consolas", 8, "bold"),
-                 fg=C["cyan"], bg=C["bg_card"],
-                 padx=8, pady=4).pack(side="left")
-
-        self._scan_label = tk.Label(vid_hdr, text="",
-                                    font=("Consolas", 8),
-                                    fg=C["green_dim"], bg=C["bg_card"],
-                                    padx=8)
-        self._scan_label.pack(side="right")
-
-        # Área de video
-        self.video_canvas = tk.Canvas(
-            video_outer,
-            bg=C["bg_deep"],
-            highlightthickness=0,
-            cursor="crosshair",
-        )
-        self.video_canvas.grid(row=1, column=0, sticky="nsew")
+        # Canvas de video
+        self.canvas = tk.Canvas(cont, bg="#0d1117", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
         self._dibujar_placeholder()
 
-        # Overlay de info en el frame (esquina superior izquierda del canvas)
-        self._frame_var  = tk.StringVar(value="FRAME  —")
-        self._prog_var   = tk.StringVar(value="PROGRESO  —")
+        # Controles del reproductor
+        ctrl = tk.Frame(cont, bg=T["panel_alt"])
+        ctrl.grid(row=1, column=0, sticky="ew")
+        ctrl.columnconfigure(2, weight=1)
+
+        self.b_play = btn(ctrl, "▶", self._player_play_pause, "accent", width=3)
+        self.b_play.grid(row=0, column=0, padx=6, pady=6)
+        self.b_play.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                               activebackground=T["border"])
+
+        self.b_stop = btn(ctrl, "■", self._player_stop, "danger", width=3)
+        self.b_stop.grid(row=0, column=1, padx=(0, 6), pady=6)
+        self.b_stop.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                               activebackground=T["border"])
+
+        self.slider = tk.Scale(ctrl, from_=0, to=100, orient="horizontal",
+                               command=self._player_seek, bg=T["panel_alt"],
+                               fg=T["text"], troughcolor=T["track"],
+                               highlightthickness=0, bd=0, showvalue=False,
+                               sliderrelief="flat")
+        self.slider.grid(row=0, column=2, sticky="ew", padx=4, pady=6)
+
+        self.var_tiempo = tk.StringVar(value="0:00 / 0:00")
+        lbl(ctrl, textvariable=self.var_tiempo, font=("Segoe UI", 8),
+            fg=T["text_dim"], bg=T["panel_alt"]).grid(row=0, column=3, padx=8)
 
     def _dibujar_placeholder(self) -> None:
-        """Dibuja la cuadrícula del placeholder cuando no hay video."""
-        self.video_canvas.delete("all")
-        self.video_canvas.after(50, self._dibujar_grid_placeholder)
-
-    def _dibujar_grid_placeholder(self) -> None:
-        c = self.video_canvas
+        c = self.canvas
         c.delete("all")
+        self.canvas.after(50, self._dibujar_placeholder_delayed)
+
+    def _dibujar_placeholder_delayed(self) -> None:
+        c = self.canvas
         w = c.winfo_width()
         h = c.winfo_height()
         if w < 10 or h < 10:
-            c.after(100, self._dibujar_grid_placeholder)
+            self.canvas.after(100, self._dibujar_placeholder_delayed)
             return
+        c.create_text(w // 2, h // 2 - 10,
+                       text="Carga un video para comenzar",
+                       font=("Segoe UI", 14), fill="#64748b")
+        c.create_text(w // 2, h // 2 + 16,
+                       text="El análisis se ejecutará en segundo plano",
+                       font=("Segoe UI", 9), fill="#475569")
 
-        # Grid de puntos
-        step = 40
-        for x in range(0, w, step):
-            for y in range(0, h, step):
-                c.create_oval(x-1, y-1, x+1, y+1, fill=C["border_dim"], outline="")
-
-        # Cruz central
-        cx, cy = w // 2, h // 2
-        size = 60
-        c.create_line(cx - size, cy, cx + size, cy, fill=C["border"], width=1)
-        c.create_line(cx, cy - size, cx, cy + size, fill=C["border"], width=1)
-        c.create_oval(cx-4, cy-4, cx+4, cy+4, outline=C["cyan_dim"], width=1)
-
-        # Texto central
-        c.create_text(cx, cy + 30, text="SELECCIONA UN VIDEO O CÁMARA",
-                      font=("Consolas", 11), fill=C["text_lo"])
-        c.create_text(cx, cy + 50, text="PARA INICIAR EL ANÁLISIS",
-                      font=("Consolas", 9), fill=C["text_lo"])
-
-        # Marco esquinas
-        m = 20
-        for (x1, y1, x2, y2) in [
-            (m, m, m+30, m), (m, m, m, m+30),
-            (w-m-30, m, w-m, m), (w-m, m, w-m, m+30),
-            (m, h-m, m+30, h-m), (m, h-m-30, m, h-m),
-            (w-m-30, h-m, w-m, h-m), (w-m, h-m-30, w-m, h-m),
-        ]:
-            c.create_line(x1, y1, x2, y2, fill=C["cyan_dim"], width=2)
-
-    # ── Panel derecho ─────────────────────────────────────────────────────────
-
-    def _construir_panel_derecho(self, parent) -> None:
-        panel = tk.Frame(parent, bg=C["bg_panel"], width=360)
-        panel.grid(row=0, column=1, sticky="nsew", padx=(0, 8), pady=8)
-        panel.pack_propagate(False)
-        panel.columnconfigure(0, weight=1)
-
-        # ── Tarjetas de métricas ──────────────────────────────────────────────
-        self._construir_metricas(panel)
-
-        _separator(panel, color=C["border"]).pack(fill="x", pady=4, padx=8)
-
-        # ── Gráfica de FPS ────────────────────────────────────────────────────
-        fps_hdr = tk.Frame(panel, bg=C["bg_panel"])
-        fps_hdr.pack(fill="x", padx=8)
-        tk.Label(fps_hdr, text="◈ RENDIMIENTO  //  FPS",
-                 font=("Consolas", 8, "bold"),
-                 fg=C["cyan"], bg=C["bg_panel"]).pack(side="left")
-
-        self.fps_graph = _FpsGraph(panel)
-        self.fps_graph.pack(fill="x", padx=8, pady=(2, 0))
-
-        _separator(panel, color=C["border"]).pack(fill="x", pady=4, padx=8)
-
-        # ── Opciones ──────────────────────────────────────────────────────────
-        self._construir_opciones(panel)
-
-        _separator(panel, color=C["border"]).pack(fill="x", pady=4, padx=8)
-
-        # ── Tabla de eventos ──────────────────────────────────────────────────
-        ev_hdr = tk.Frame(panel, bg=C["bg_panel"])
-        ev_hdr.pack(fill="x", padx=8)
-        tk.Label(ev_hdr, text="◈ EVENTOS DETECTADOS",
-                 font=("Consolas", 8, "bold"),
-                 fg=C["cyan"], bg=C["bg_panel"]).pack(side="left")
-        self._ev_count_var = tk.StringVar(value="0 reg.")
-        tk.Label(ev_hdr, textvariable=self._ev_count_var,
-                 font=("Consolas", 7),
-                 fg=C["text_lo"], bg=C["bg_panel"]).pack(side="right")
-
-        self.event_table = _EventTable(panel)
-        self.event_table.pack(fill="both", expand=True, padx=8, pady=(2, 0))
-
-        # Botón ver BD
-        _NeonButton(panel, "[ CARGAR EVENTOS DE BASE DE DATOS ]",
-                    self._cargar_eventos_db, color=C["cyan"]).pack(
-                        fill="x", padx=8, pady=6)
-
-        # ── Log terminal ──────────────────────────────────────────────────────
-        log_hdr = tk.Frame(panel, bg=C["bg_panel"])
-        log_hdr.pack(fill="x", padx=8)
-        tk.Label(log_hdr, text="◈ LOG SISTEMA",
-                 font=("Consolas", 8, "bold"),
-                 fg=C["green_dim"], bg=C["bg_panel"]).pack(side="left")
-
-        self.terminal = _LogTerminal(panel)
-        self.terminal.pack(fill="x", padx=8, pady=(2, 6))
-        # Altura fija del terminal
-        self.terminal.configure(height=90)
-
-    def _construir_metricas(self, parent) -> None:
-        met_hdr = tk.Frame(parent, bg=C["bg_panel"])
-        met_hdr.pack(fill="x", padx=8, pady=(8, 4))
-        tk.Label(met_hdr, text="◈ MÉTRICAS EN TIEMPO REAL",
-                 font=("Consolas", 8, "bold"),
-                 fg=C["cyan"], bg=C["bg_panel"]).pack(side="left")
-
-        cards_row1 = tk.Frame(parent, bg=C["bg_panel"])
-        cards_row1.pack(fill="x", padx=8, pady=2)
-
-        self.card_activos = _StatCard(cards_row1, "ACTIVOS",  color=C["green"],  width=80)
-        self.card_eventos = _StatCard(cards_row1, "EVENTOS",  color=C["yellow"], width=80)
-        self.card_ciclos  = _StatCard(cards_row1, "CICLOS",   color=C["magenta"], width=80)
-        self.card_fps     = _StatCard(cards_row1, "FPS",      color=C["cyan"],    width=80)
-
-        for card in (self.card_activos, self.card_eventos, self.card_ciclos, self.card_fps):
-            card.pack(side="left", padx=3, pady=2)
-
-        # Barra de progreso custom
-        prog_f = tk.Frame(parent, bg=C["bg_panel"])
-        prog_f.pack(fill="x", padx=8, pady=(2, 0))
-
-        tk.Label(prog_f, text="PROGRESO:", font=("Consolas", 7),
-                 fg=C["text_lo"], bg=C["bg_panel"]).pack(side="left")
-        self._prog_lbl = tk.Label(prog_f, text="0%",
-                                   font=("Consolas", 7),
-                                   fg=C["cyan"], bg=C["bg_panel"])
-        self._prog_lbl.pack(side="right")
-
-        self._prog_canvas = tk.Canvas(parent, height=6, bg=C["bg_deep"],
-                                       highlightthickness=0)
-        self._prog_canvas.pack(fill="x", padx=8, pady=(2, 0))
-        self._prog_canvas.bind("<Configure>", lambda _: self._redraw_progress(0))
-        self._prog_pct: float = 0.0
-
-        # Frame info
-        frame_f = tk.Frame(parent, bg=C["bg_panel"])
-        frame_f.pack(fill="x", padx=8, pady=(2, 0))
-        tk.Label(frame_f, text="FRAME:", font=("Consolas", 7),
-                 fg=C["text_lo"], bg=C["bg_panel"]).pack(side="left")
-        self._frame_lbl = tk.Label(frame_f, text="0 / —",
-                                    font=("Consolas", 7, "bold"),
-                                    fg=C["text_hi"], bg=C["bg_panel"])
-        self._frame_lbl.pack(side="left", padx=4)
-
-    def _redraw_progress(self, pct: float):
-        c = self._prog_canvas
+    def _dibujar_progreso(self, pct, frame, total, fps, activos) -> None:
+        c = self.canvas
         c.delete("all")
         w = c.winfo_width()
         h = c.winfo_height()
-        if w < 2:
+        if w < 10:
             return
-        # Fondo
-        c.create_rectangle(0, 0, w, h, fill=C["bg_deep"], outline="")
-        # Barra
-        bar_w = int(w * pct / 100)
-        if bar_w > 0:
-            # Gradiente: cyan → green según progreso
-            c.create_rectangle(0, 0, bar_w, h, fill=C["cyan"], outline="")
-        # Brillo en el extremo
-        if bar_w > 4:
-            c.create_rectangle(bar_w - 4, 0, bar_w, h,
-                                fill=C["text_hi"], outline="")
+        cx, cy = w // 2, h // 2
 
-    def _construir_opciones(self, parent) -> None:
-        opt_hdr = tk.Frame(parent, bg=C["bg_panel"])
-        opt_hdr.pack(fill="x", padx=8)
-        tk.Label(opt_hdr, text="◈ CONFIGURACIÓN DEL PIPELINE",
-                 font=("Consolas", 8, "bold"),
-                 fg=C["cyan"], bg=C["bg_panel"]).pack(side="left")
+        c.create_text(cx, cy - 50, text="Analizando video...",
+                       font=("Segoe UI", 16, "bold"), fill="#60a5fa")
 
-        opt_f = tk.Frame(parent, bg=C["bg_card"],
-                         highlightthickness=1, highlightbackground=C["border"])
-        opt_f.pack(fill="x", padx=8, pady=(4, 0))
+        # Barra de progreso
+        bw = min(w - 160, 440)
+        bx = cx - bw // 2
+        by = cy - 10
+        bh = 22
+        c.create_rectangle(bx, by, bx + bw, by + bh, fill="#1e293b", outline="#334155")
+        fw = int(bw * pct / 100)
+        if fw > 0:
+            c.create_rectangle(bx, by, bx + fw, by + bh, fill="#3b82f6", outline="")
+        c.create_text(cx, by + bh // 2, text=f"{pct:.1f}%",
+                       font=("Segoe UI", 10, "bold"), fill="white")
+
+        total_s = str(total) if total else "?"
+        c.create_text(cx, by + bh + 22,
+                       text=f"Frame {frame} / {total_s}    {fps:.1f} FPS    Activos: {activos}",
+                       font=("Segoe UI", 9), fill="#94a3b8")
+
+    def _dibujar_completado(self) -> None:
+        c = self.canvas
+        w = c.winfo_width()
+        h = c.winfo_height()
+        if w < 10:
+            return
+        c.create_text(w // 2, h // 2 - 10, text="Análisis completado",
+                       font=("Segoe UI", 14, "bold"), fill="#4ade80")
+        c.create_text(w // 2, h // 2 + 16,
+                       text="Pulsa ▶ para ver el video procesado",
+                       font=("Segoe UI", 9), fill="#64748b")
+
+    # ── Panel lateral (derecha): métricas + configuración + historial ────────────
+
+    def _panel_lateral(self, parent) -> None:
+        panel = tk.Frame(parent, bg=T["panel"], highlightthickness=1,
+                         highlightbackground=T["border"], width=300)
+        panel.grid(row=0, column=1, sticky="nsew")
+        panel.pack_propagate(False)
+        panel.columnconfigure(0, weight=1)
+
+        # Scrollable
+        canvas_s = tk.Canvas(panel, bg=T["panel"], highlightthickness=0)
+        sb = tk.Scrollbar(panel, orient="vertical", command=canvas_s.yview,
+                         bg=T["panel"], troughcolor=T["panel_alt"])
+        canvas_s.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        canvas_s.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas_s, bg=T["panel"])
+        canvas_s.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                    lambda e: canvas_s.configure(scrollregion=canvas_s.bbox("all")))
+        canvas_s.bind("<Configure>",
+                        lambda e: canvas_s.itemconfigure("all", width=e.width))
+
+        self._panel_metricas(inner)
+        self._panel_config(inner)
+        self._panel_historial(inner)
+
+    def _panel_metricas(self, parent) -> None:
+        seccion(parent, "Métricas en tiempo real")
+
+        f = tk.Frame(parent, bg=T["panel"])
+        f.pack(fill="x", padx=10, pady=8)
+
+        # Progreso
+        pf = tk.Frame(f, bg=T["panel"])
+        pf.pack(fill="x", pady=2)
+        lbl(pf, text="Progreso", font=("Segoe UI", 8), fg=T["text_dim"]).pack(side="left")
+        self.var_progreso = tk.StringVar(value="0%")
+        lbl(pf, textvariable=self.var_progreso, font=("Segoe UI", 8, "bold"),
+            fg=T["accent"]).pack(side="right")
+
+        self.bar_progreso = tk.Canvas(f, height=10, bg=T["track"], highlightthickness=0)
+        self.bar_progreso.pack(fill="x", pady=(2, 6))
+
+        # Métricas en grid 2x3 (frame separado para no mezclar pack y grid)
+        grid_f = tk.Frame(f, bg=T["panel"])
+        grid_f.pack(fill="x")
+        grid_f.columnconfigure(0, weight=1)
+        grid_f.columnconfigure(1, weight=1)
+
+        datos = [
+            ("Frames", "var_frames", T["text"]),
+            ("Detecciones", "var_dets", T["success"]),
+            ("Eventos", "var_eventos", T["warning"]),
+            ("Activos", "var_activos", T["accent"]),
+            ("Ciclos", "var_ciclos", T["text_dim"]),
+            ("FPS", "var_fps", T["text"]),
+        ]
+        for i, (nombre, var_name, color) in enumerate(datos):
+            row = i // 2
+            col = i % 2
+            card = tk.Frame(grid_f, bg=T["panel_alt"], highlightthickness=1,
+                           highlightbackground=T["border"])
+            card.grid(row=row, column=col, sticky="ew", padx=2, pady=2)
+            lbl(card, text=nombre, font=("Segoe UI", 7), fg=T["text_dim"],
+                bg=T["panel_alt"]).pack(anchor="w", padx=6, pady=(4, 0))
+            var = tk.StringVar(value="0")
+            setattr(self, var_name, var)
+            lbl(card, textvariable=var, font=("Segoe UI", 16, "bold"),
+                fg=color, bg=T["panel_alt"]).pack(anchor="w", padx=6, pady=(0, 4))
+
+    def _panel_config(self, parent) -> None:
+        seccion(parent, "Configuración")
+
+        f = tk.Frame(parent, bg=T["panel"])
+        f.pack(fill="x", padx=10, pady=8)
+
+        # Skip frames
+        rf = tk.Frame(f, bg=T["panel"])
+        rf.pack(fill="x", pady=2)
+        lbl(rf, text="Procesar 1 de cada N frames", font=("Segoe UI", 8),
+            fg=T["text_dim"]).pack(side="left")
+        self.var_skip = tk.StringVar(value=str(self.config_app.track_skip))
+        ttk.Combobox(rf, textvariable=self.var_skip, width=4, state="readonly",
+                      values=("1", "2", "3", "4", "5", "6", "8", "10"),
+                      font=("Segoe UI", 8)).pack(side="right")
+
+        # Imgsz
+        rf2 = tk.Frame(f, bg=T["panel"])
+        rf2.pack(fill="x", pady=2)
+        lbl(rf2, text="Resolución de inferencia", font=("Segoe UI", 8),
+            fg=T["text_dim"]).pack(side="left")
+        self.var_imgsz = tk.StringVar(value=str(self.config_app.track_imgsz))
+        ttk.Combobox(rf2, textvariable=self.var_imgsz, width=4, state="readonly",
+                      values=("160", "320", "480", "640"),
+                      font=("Segoe UI", 8)).pack(side="right")
 
         # Checks
-        chk_data = [
-            ("▸ Guardar eventos en BD",        self.var_guardar_db, C["green"]),
-            ("▸ OCR números de flota",         self.var_ocr,        C["yellow"]),
-            ("▸ Clasificar estado (LSTM/CNN)", self.var_clasif,     C["magenta"]),
-        ]
-        for txt, var, col in chk_data:
-            cf = tk.Frame(opt_f, bg=C["bg_card"])
-            cf.pack(fill="x", padx=6, pady=1)
-            cb = tk.Checkbutton(
-                cf, text=txt, variable=var,
-                font=("Consolas", 8),
-                fg=col, bg=C["bg_card"],
-                selectcolor=C["bg_deep"],
-                activeforeground=col, activebackground=C["bg_hover"],
-                bd=0, highlightthickness=0,
-            )
-            cb.pack(side="left")
+        self.var_guardar = tk.BooleanVar(value=True)
+        self.var_ocr = tk.BooleanVar(value=self.config_app.ocr_habilitado)
+        self.var_clasif = tk.BooleanVar(value=self.config_app.clasificador_habilitado)
 
-        # Comboboxes
-        combo_data = [
-            ("SKIP FRAMES:", self.var_skip, ("1","2","3","4","5","6","8","10")),
-            ("IMGSZ:", self.var_imgsz, ("160","320","480","640")),
-        ]
-        for lbl, var, vals in combo_data:
-            cf = tk.Frame(opt_f, bg=C["bg_card"])
-            cf.pack(fill="x", padx=6, pady=2)
-            tk.Label(cf, text=lbl, font=("Consolas", 8),
-                     fg=C["text_mid"], bg=C["bg_card"]).pack(side="left")
+        for txt, var in [
+            ("Guardar eventos en base de datos", self.var_guardar),
+            ("Leer números de flota (OCR)", self.var_ocr),
+            ("Clasificar estado (LSTM/CNN)", self.var_clasif),
+        ]:
+            tk.Checkbutton(f, text=txt, variable=var, font=("Segoe UI", 8),
+                           fg=T["text"], bg=T["panel"], selectcolor=T["panel_alt"],
+                           activebackground=T["panel"], activeforeground=T["text"],
+                           bd=0, highlightthickness=0, anchor="w").pack(fill="x", pady=1)
 
-            # Combobox estilizado manualmente con un OptionMenu oscuro
-            om = tk.OptionMenu(cf, var, *vals)
-            om.configure(
-                font=("Consolas", 8), fg=C["cyan"], bg=C["bg_deep"],
-                activeforeground=C["cyan"], activebackground=C["bg_hover"],
-                highlightthickness=0, bd=0, relief="flat",
-                indicatoron=True,
-            )
-            om["menu"].configure(
-                font=("Consolas", 8), fg=C["cyan"], bg=C["bg_deep"],
-                activeforeground=C["bg_deep"], activebackground=C["cyan"],
-            )
-            om.pack(side="right")
+    def _panel_historial(self, parent) -> None:
+        seccion(parent, "Historial")
 
-    # ── Status bar ────────────────────────────────────────────────────────────
+        self.hist_frame = tk.Frame(parent, bg=T["panel"])
+        self.hist_frame.pack(fill="x", padx=10, pady=8)
+        self._hist_items: dict[int, tk.Frame] = {}
 
-    def _construir_statusbar(self) -> None:
-        sb = tk.Frame(self, bg=C["bg_main"],
-                      highlightthickness=1, highlightbackground=C["border_dim"])
-        sb.grid(row=2, column=0, sticky="ew")
-        sb.columnconfigure(1, weight=1)
+    def _refrescar_historial(self) -> None:
+        if self._gestor is None:
+            return
+        for item in self._hist_items.values():
+            item.destroy()
+        self._hist_items.clear()
 
-        # Indicador de estado (puntito + texto)
-        self._status_dot = tk.Label(sb, text="●", font=("Consolas", 9),
-                                     fg=C["green"], bg=C["bg_main"], padx=6)
-        self._status_dot.grid(row=0, column=0, sticky="w")
+        jobs = self._gestor.listar_jobs()
+        if not jobs:
+            lbl(self.hist_frame, text="Aún no hay análisis",
+                font=("Segoe UI", 8), fg=T["text_dim"], bg=T["panel"]).pack(pady=8)
+            return
 
-        tk.Label(sb, textvariable=self.var_estado,
-                 font=("Consolas", 9, "bold"),
-                 fg=C["text_hi"], bg=C["bg_main"]).grid(row=0, column=1, sticky="w")
+        for job in jobs:
+            self._crear_item_historial(job)
 
-        tk.Label(sb, text=f"MODEL: {self.config_app.model_path}  //  DB: {self.config_app.db_url}",
-                 font=("Consolas", 7),
-                 fg=C["text_lo"], bg=C["bg_main"],
-                 padx=12).grid(row=0, column=2, sticky="e")
+    def _crear_item_historial(self, job) -> None:
+        estado_txt, estado_color, estado_sym = ESTADO_INFO.get(
+            job["estado"], ("?", T["text_dim"], "?"))
 
-    # ── Animaciones ───────────────────────────────────────────────────────────
+        item = tk.Frame(self.hist_frame, bg=T["panel_alt"],
+                        highlightthickness=1, highlightbackground=T["border"],
+                        cursor="hand2")
+        item.pack(fill="x", pady=2)
 
-    def _animar_header(self) -> None:
-        """Animación continua: LEDs pulsantes y texto de scan."""
-        self._anim_tick += 1
-        t = self._anim_tick
+        # Fila superior
+        top = tk.Frame(item, bg=T["panel_alt"])
+        top.pack(fill="x", padx=6, pady=(3, 0))
 
-        proc_vivo = self._procesador is not None and self._procesador.is_alive()
-        pausado   = proc_vivo and (self._procesador.estado.pausado if proc_vivo else False)
+        tk.Label(top, text=estado_sym, font=("Segoe UI", 9), fg=estado_color,
+                 bg=T["panel_alt"]).pack(side="left")
 
-        # LED de procesando: pulsa verde si activo
-        if proc_vivo and not pausado:
-            on = (t % 8) < 4
-            self._led_proc.configure(fg=C["green"] if on else C["green_dark"])
-        else:
-            self._led_proc.configure(fg=C["border"])
+        nombre = job["nombre"][:24]
+        lbl(top, text=nombre, font=("Segoe UI", 8, "bold"), fg=T["text"],
+            bg=T["panel_alt"]).pack(side="left", padx=4)
 
-        # LED de tracking: pulsa cyan si hay activos
-        activos = int(self._procesador.estado.activos) if proc_vivo else 0
-        if activos > 0:
-            on = (t % 6) < 3
-            self._led_track.configure(fg=C["cyan"] if on else C["cyan_dark"])
-        else:
-            self._led_track.configure(fg=C["border"])
+        lbl(top, text=estado_txt, font=("Segoe UI", 7), fg=estado_color,
+            bg=T["panel_alt"]).pack(side="right")
 
-        # LED de BD
-        if proc_vivo and self.var_guardar_db.get():
-            on = (t % 20) < 2
-            self._led_db.configure(fg=C["yellow"] if on else C["yellow_dim"])
-        else:
-            self._led_db.configure(fg=C["border"])
+        # Fila info
+        bot = tk.Frame(item, bg=T["panel_alt"])
+        bot.pack(fill="x", padx=6, pady=(0, 3))
 
-        # Texto de scan
-        chars = ["SCANNING", "SCAN·ING", "SCANN·NG", "SCANNI·G", "SCANNIN·",
-                 "SCANNING", "·CANNING", "S·ANNING", "SC·NNING"]
-        if proc_vivo and not pausado:
-            self._scan_label.configure(text=chars[t % len(chars)])
-        elif pausado:
-            on = (t % 10) < 5
-            self._scan_label.configure(
-                text="⚠  PAUSADO" if on else "         ")
-        else:
-            # Idle: "STANDBY..."
-            dots = "." * (1 + (t % 4))
-            self._scan_label.configure(text=f"STANDBY{dots:<4}", fg=C["text_lo"])
+        if job["total_eventos"]:
+            lbl(bot, text=f"{job['total_eventos']} eventos", font=("Segoe UI", 7),
+                fg=T["text_dim"], bg=T["panel_alt"]).pack(side="left")
+        elif job["estado"] == "procesando":
+            pct = job["progreso"] or 0
+            lbl(bot, text=f"{pct:.0f}% procesando", font=("Segoe UI", 7),
+                fg=T["accent"], bg=T["panel_alt"]).pack(side="left")
 
-        # Punto de status parpadeante
-        if proc_vivo and not pausado:
-            self._status_dot.configure(fg=C["green"] if (t % 8 < 4) else C["green_dark"])
-        elif pausado:
-            self._status_dot.configure(fg=C["yellow"] if (t % 10 < 5) else C["yellow_dim"])
-        else:
-            self._status_dot.configure(fg=C["text_lo"])
+        if job["estado"] == "completado" and job["video_disponible"]:
+            lbl(bot, text="✓ ver", font=("Segoe UI", 7), fg=T["success"],
+                bg=T["panel_alt"]).pack(side="right")
 
-        self.after(120, self._animar_header)
+        # Click para ver
+        if job["estado"] == "completado" and job["video_disponible"]:
+            for w in (item, top, bot):
+                w.bind("<Button-1>", lambda e, jid=job["id"]: self._ver_historial(jid))
 
-    # ── Acciones del usuario ──────────────────────────────────────────────────
+        self._hist_items[job["id"]] = item
 
-    @staticmethod
-    def _es_camara(fuente: str | int) -> bool:
-        if isinstance(fuente, int):
-            return True
-        if isinstance(fuente, str):
-            v = fuente.strip().lower()
-            return v.isdigit() or v.startswith(("rtsp://", "http://", "https://"))
-        return False
+    def _ver_historial(self, job_id: int) -> None:
+        """Carga un video del historial en el reproductor."""
+        if self._gestor is None:
+            return
+        jobs = self._gestor.listar_jobs()
+        job = next((j for j in jobs if j["id"] == job_id), None)
+        if job and job["ruta_salida"] and os.path.exists(job["ruta_salida"]):
+            self._job_actual = job_id
+            self.var_fuente.set(job["nombre"])
+            self._player_cargar(job["ruta_salida"])
+            self._refrescar_historial()
 
-    def _texto_fuente(self) -> str:
-        if self._fuente is None:
-            return "SIN FUENTE"
-        if self._es_camara(self._fuente):
-            return f"CAM:{self._fuente}"
-        return Path(str(self._fuente)).name[:40]
+    # ── Barra de eventos (abajo) ───────────────────────────────────────────────
 
-    def _abrir_video(self) -> None:
-        inicial = str(Path(self.config_app.video_path).parent) if self.config_app.video_path else str(Path.cwd())
+    def _barra_eventos(self) -> None:
+        cont = tk.Frame(self, bg=T["panel"], highlightthickness=1,
+                        highlightbackground=T["border"])
+        cont.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        cont.columnconfigure(0, weight=1)
+
+        seccion(cont, "Eventos detectados")
+
+        cols = ("tipo", "maquina", "id", "conf")
+        self.tabla = ttk.Treeview(cont, columns=cols, show="headings", height=6)
+        for col, titulo, ancho in [
+            ("tipo", "Tipo", 130),
+            ("maquina", "Máquina", 120),
+            ("id", "ID", 60),
+            ("conf", "Confianza", 90),
+        ]:
+            self.tabla.heading(col, text=titulo)
+            self.tabla.column(col, width=ancho, anchor="w")
+
+        self.tabla.tag_configure("APARICION", foreground=T["success"])
+        self.tabla.tag_configure("DESAPARICION", foreground=T["danger"])
+        self.tabla.tag_configure("ZONA", foreground=T["warning"])
+
+        sb = ttk.Scrollbar(cont, orient="horizontal", command=self.tabla.xview)
+        self.tabla.configure(xscrollcommand=sb.set)
+        self.tabla.pack(fill="x", padx=10, pady=(4, 0))
+        sb.pack(fill="x", padx=10, pady=(0, 6))
+
+    def _insertar_evento(self, ev: EventoUI) -> None:
+        conf = f"{ev.confianza:.2f}" if ev.confianza is not None else "—"
+        self.tabla.insert("", "end", values=(ev.tipo, ev.maquina or "—",
+                                              str(ev.track_id), conf),
+                          tags=(ev.tipo,))
+        if len(self.tabla.get_children()) > 200:
+            self.tabla.delete(self.tabla.get_children()[0])
+
+    def _limpiar_eventos(self) -> None:
+        for item in self.tabla.get_children():
+            self.tabla.delete(item)
+
+    # ── Acciones ────────────────────────────────────────────────────────────────
+
+    def _cargar_video(self) -> None:
+        if self._cargando:
+            return
+        if self._gestor is None:
+            messagebox.showwarning("Espera", "El sistema aún se está inicializando.")
+            return
+
         ruta = filedialog.askopenfilename(
             title="Seleccionar video",
-            initialdir=inicial,
             filetypes=(("Videos", "*.mp4 *.avi *.mov *.mkv *.wmv"), ("Todos", "*.*")),
         )
         if not ruta:
             return
-        self._fuente = ruta
-        self.var_fuente.set(self._texto_fuente())
-        self.var_estado.set("VIDEO CARGADO  //  PULSA INICIAR")
-        self._dibujar_grid_placeholder()
-        self.terminal.log(f"Video seleccionado: {ruta}", "info")
 
-    def _usar_camara(self) -> None:
-        defecto = str(self.config_app.camera_source) if self.config_app.camera_source else "0"
-        valor = simpledialog.askstring(
-            "Cámara", "Índice (0=webcam) o URL RTSP/HTTP:", initialvalue=defecto, parent=self,
-        )
-        if valor is None or not valor.strip():
-            return
-        valor = valor.strip()
-        self._fuente = int(valor) if valor.isdigit() else valor
-        self.var_fuente.set(self._texto_fuente())
-        self.var_estado.set("CÁMARA SELECCIONADA  //  PULSA INICIAR")
-        self.terminal.log(f"Cámara/stream: {valor}", "info")
-
-    def _iniciar(self) -> None:
-        if self._procesador is not None and self._procesador.is_alive():
-            return
-        if self._fuente is None:
-            messagebox.showwarning("Sin fuente", "Selecciona un video o cámara primero.")
-            return
-        if Image is None:
-            messagebox.showerror("Falta Pillow", "pip install pillow")
-            return
         if not Path(self.config_app.model_path).exists():
             messagebox.showerror(
                 "Modelo no encontrado",
-                f"No existe: {self.config_app.model_path}\n\n"
-                "Coloca best.pt en models/ o ajusta MODEL_PATH en .env.",
+                f"No existe el modelo:\n{self.config_app.model_path}\n\n"
+                "Coloca el archivo .pt en models/ o ajusta MODEL_PATH en .env.",
             )
             return
 
-        opciones = OpcionesAnalisis(
-            guardar_db      = self.var_guardar_db.get(),
-            usar_ocr        = self.var_ocr.get(),
-            usar_clasificador = self.var_clasif.get(),
-            track_skip      = int(self.var_skip.get()),
-            track_imgsz     = int(self.var_imgsz.get()),
-            display_width   = self.config_app.display_width,
-        )
-
-        self.event_table.limpiar()
-        self._finalizado_avisado = False
-        self._t_inicio = time.perf_counter()
-        self._procesador = Procesador(self._fuente, opciones, self.config_app)
-        self._procesador.start()
-
-        self.btn_pausar.set_state("normal")
-        self.var_estado.set("INICIALIZANDO PIPELINE...")
-        self.terminal.log("Pipeline iniciado.", "info")
-        if not self._poll_programado:
-            self._poll_programado = True
-            self._poll()
-
-    def _pausar(self) -> None:
-        if self._procesador is None:
-            return
-        if self._procesador.estado.pausado:
-            self._procesador.reanudar()
-            self.btn_pausar.set_text("[ PAUSAR ]")
-            self.var_estado.set("PROCESANDO...")
-            self.terminal.log("Pipeline reanudado.", "info")
-        else:
-            self._procesador.pausar()
-            self.btn_pausar.set_text("[ REANUDAR ]")
-            self.var_estado.set("⚠  PAUSADO")
-            self.terminal.log("Pipeline pausado.", "info")
+        self._cargando = True
+        self._limpiar_eventos()
+        try:
+            info = self._gestor.crear_job(
+                ruta_video=ruta,
+                guardar_db=self.var_guardar.get(),
+                usar_ocr=self.var_ocr.get(),
+                usar_clasificador=self.var_clasif.get(),
+                track_skip=int(self.var_skip.get()),
+                track_imgsz=int(self.var_imgsz.get()),
+            )
+            self._job_actual = info["job_id"]
+            self._t_inicio = time.perf_counter()
+            self.var_fuente.set(info["nombre"])
+            self.b_detener.configure(state="normal", bg=T["danger"], fg="white",
+                                       activebackground=T["danger"])
+            self.b_eliminar.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                                       activebackground=T["border"])
+            self._dibujar_progreso(0, 0, info["total_frames"], 0, 0)
+            self._refrescar_historial()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo iniciar el análisis:\n{e}")
+        finally:
+            self._cargando = False
 
     def _detener(self) -> None:
-        if self._procesador is not None and self._procesador.is_alive():
-            self._procesador.detener()
-            self.var_estado.set("DETENIENDO...")
-            self.terminal.log("Señal de parada enviada.", "info")
+        if self._job_actual is None or self._gestor is None:
+            return
+        self._gestor.cancelar_job(self._job_actual)
+        self.b_detener.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                                   activebackground=T["border"])
 
-    def _cerrar(self) -> None:
-        self._poll_programado = False
-        if self._procesador is not None and self._procesador.is_alive():
-            self._procesador.detener()
-            self._procesador.join(timeout=2.0)
-        self.destroy()
+    def _eliminar(self) -> None:
+        if self._job_actual is None or self._gestor is None:
+            return
+        if not messagebox.askyesno("Eliminar", "¿Eliminar este análisis y sus archivos?"):
+            return
+        self._gestor.eliminar_job(self._job_actual)
+        self._job_actual = None
+        self.var_fuente.set("Sin video cargado")
+        self._player_detener()
+        self._player_limpiar()
+        self._dibujar_placeholder()
+        self._limpiar_eventos()
+        self.b_eliminar.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                                    activebackground=T["border"])
+        self.b_detener.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                                   activebackground=T["border"])
+        self._refrescar_historial()
 
-    # ── Polling ───────────────────────────────────────────────────────────────
+    # ── Polling ─────────────────────────────────────────────────────────────────
+
+    def _iniciar_poll(self) -> None:
+        if self._poll_id is None:
+            self._poll()
 
     def _poll(self) -> None:
-        proc = self._procesador
-        if proc is None:
-            self._poll_programado = False
+        self._poll_id = None
+        if self._gestor is not None and self._job_actual is not None:
+            info = self._gestor.obtener_estado(self._job_actual)
+            if info is not None:
+                self._actualizar_metricas(info)
+
+                if info.estado in ("pendiente", "procesando", "generando_video"):
+                    self._dibujar_progreso(info.progreso, info.frame_actual,
+                                            info.total_frames, info.fps, info.activos)
+                    # Drenar eventos
+                    for ev in self._gestor.drenar_eventos(self._job_actual):
+                        self._insertar_evento(ev)
+
+                elif info.estado == "completado":
+                    self._on_completado(info)
+
+                elif info.estado in ("error", "cancelado"):
+                    self._on_error(info)
+
+        # Refrescar historial siempre
+        self._refrescar_historial()
+        self._poll_id = self.after(500, self._poll)
+
+    def _actualizar_metricas(self, info) -> None:
+        self.var_progreso.set(f"{info.progreso:.1f}%")
+        self._dibujar_barra(info.progreso)
+        total_s = str(info.total_frames) if info.total_frames else "?"
+        self.var_frames.set(f"{info.frame_actual}/{total_s}")
+        self.var_dets.set(str(info.eventos))
+        self.var_eventos.set(str(info.eventos))
+        self.var_activos.set(str(info.activos))
+        self.var_ciclos.set(str(info.ciclos))
+        self.var_fps.set(f"{info.fps:.1f}")
+
+    def _dibujar_barra(self, pct) -> None:
+        c = self.bar_progreso
+        c.delete("all")
+        w = c.winfo_width()
+        if w < 2:
             return
+        fw = int(w * pct / 100)
+        if fw > 0:
+            c.create_rectangle(0, 0, fw, 10, fill=T["accent"], outline="")
 
-        # Mostrar frame
-        frame = proc.obtener_frame()
-        if frame is not None:
-            self._mostrar_frame(frame)
+    def _on_completado(self, info) -> None:
+        self.b_detener.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                                   activebackground=T["border"])
+        self.b_eliminar.configure(state="normal", bg=T["danger"], fg="white",
+                                    activebackground=T["danger"])
+        elapsed = time.perf_counter() - self._t_inicio
+        self._dibujar_completado()
+        # Cargar el video procesado en el reproductor
+        if info.ruta_salida and os.path.exists(info.ruta_salida):
+            self._player_cargar(info.ruta_salida)
+        self._refrescar_historial()
 
-        # Actualizar estadísticas
-        est = proc.estado
-        total = est.total_frames
+    def _on_error(self, info) -> None:
+        self.b_detener.configure(state="disabled", bg=T["border"], fg=T["text_dim"],
+                                   activebackground=T["border"])
+        self.b_eliminar.configure(state="normal", bg=T["danger"], fg="white",
+                                    activebackground=T["danger"])
+        if info.error:
+            messagebox.showerror("Error en el análisis", info.error)
+        self._dibujar_placeholder()
+        self._refrescar_historial()
 
-        self.card_activos.update(str(est.activos))
-        self.card_eventos.update(str(est.eventos))
-        self.card_ciclos.update(str(est.ciclos))
-        self.card_fps.update(f"{est.fps:.1f}")
-        self.fps_graph.push(est.fps)
+    # ── Reproductor ──────────────────────────────────────────────────────────────
 
-        # Barra de progreso
-        pct = est.progreso
-        self._prog_pct = pct
-        self._redraw_progress(pct)
-        self._prog_lbl.configure(text=f"{pct:.1f}%")
-        self._frame_lbl.configure(text=f"{est.frame_actual} / {total if total else '?'}")
-
-        self.var_estado.set(est.mensaje.upper())
-
-        # Drenar eventos
-        self._drenar_eventos(proc)
-
-        # Fin
-        if proc.terminado and not self._finalizado_avisado:
-            self._finalizado_avisado = True
-            self.btn_pausar.set_state("disabled")
-            self.btn_pausar.set_text("[ PAUSAR ]")
-            elapsed = time.perf_counter() - self._t_inicio
-            self.var_estado.set(f"ANÁLISIS COMPLETO  //  {elapsed:.1f}s")
-            self.terminal.log(f"Análisis finalizado en {elapsed:.1f}s.", "aparicion")
-            # Dibujar grid placeholder de nuevo
-            self._dibujar_grid_placeholder()
-            if est.error:
-                self.terminal.log(f"ERROR: {est.error}", "error")
-                messagebox.showerror("Error en el análisis", est.error)
-            self._poll_programado = False
+    def _player_cargar(self, ruta: str) -> None:
+        self._player_detener()
+        self._player_limpiar()
+        if self._player_cap is not None:
+            self._player_cap.release()
+        self._player_cap = cv2.VideoCapture(ruta)
+        if not self._player_cap.isOpened():
+            messagebox.showerror("Error", "No se pudo abrir el video procesado.")
             return
+        self._player_total = int(self._player_cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        self._player_fps = self._player_cap.get(cv2.CAP_PROP_FPS) or 30.0
+        self._player_frame = 0
+        self._player_mostrar(0)
+        self._player_actualizar_tiempo()
+        # Habilitar controles
+        self.b_play.configure(state="normal", bg=T["accent"], fg="white",
+                               activebackground=T["accent"])
+        self.b_stop.configure(state="normal", bg=T["danger"], fg="white",
+                               activebackground=T["danger"])
 
-        self.after(self.POLL_MS, self._poll)
-
-    def _mostrar_frame(self, frame: np.ndarray) -> None:
+    def _player_mostrar(self, frame_idx: int) -> None:
+        if self._player_cap is None or not self._player_cap.isOpened():
+            return
         if Image is None:
             return
-
-        c = self.video_canvas
-        ancho = max(320, c.winfo_width())
-        alto  = max(240, c.winfo_height())
-
-        rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        imagen = Image.fromarray(rgb)
-        imagen.thumbnail((ancho, alto), Image.Resampling.LANCZOS)
-
-        self._photo = ImageTk.PhotoImage(imagen)
-        c.delete("all")
-        # Centrar la imagen en el canvas
-        cx = ancho // 2
-        cy = alto // 2
-        c.create_image(cx, cy, image=self._photo, anchor="center")
-
-        # Overlay de esquinas sobre el canvas
-        iw, ih = imagen.size
-        x0 = cx - iw // 2
-        y0 = cy - ih // 2
-        x1 = x0 + iw
-        y1 = y0 + ih
-        cs = 18  # tamaño de las esquinas
-        for (px, py, dx, dy) in [
-            (x0, y0,  cs, 0), (x0, y0, 0,  cs),
-            (x1, y0, -cs, 0), (x1, y0, 0,  cs),
-            (x0, y1,  cs, 0), (x0, y1, 0, -cs),
-            (x1, y1, -cs, 0), (x1, y1, 0, -cs),
-        ]:
-            c.create_line(px, py, px + dx, py + dy, fill=C["cyan"], width=2)
-
-    def _drenar_eventos(self, proc: Procesador) -> None:
-        new = 0
-        while True:
-            try:
-                ev = proc.eventos.get_nowait()
-            except queue.Empty:
-                break
-            self.event_table.insertar(ev)
-            tag = ev.tipo.lower() if ev.tipo.lower() in ("aparicion", "desaparicion", "zona") else "info"
-            tipo_sym = {"APARICION": "▶", "DESAPARICION": "◀", "ZONA": "◈"}.get(ev.tipo, "·")
-            self.terminal.log(
-                f"{tipo_sym} {ev.tipo}  ID:{ev.track_id}  {ev.maquina or ''}  "
-                f"{'conf=' + str(round(ev.confianza, 2)) if ev.confianza else ''}  "
-                f"{ev.zona or ''}",
-                tag,
-            )
-            new += 1
-            if new > 0:
-                self.card_eventos.flash()
-
-        # Actualizar contador de filas
-        n = len(self.event_table._rows)
-        self._ev_count_var.set(f"{n} reg.")
-
-    def _cargar_eventos_db(self) -> None:
-        self.event_table.limpiar()
-        try:
-            migrate()
-            with get_session() as session:
-                eventos = RepositorioEventos(session).obtener_recientes(200)
-                datos = [
-                    EventoUI(
-                        timestamp=e.timestamp,
-                        tipo=(e.tipo_evento_ciclo or "evento").upper(),
-                        maquina=e.tipo_maquina,
-                        track_id=e.id,
-                        confianza=e.confianza,
-                        zona=e.zona_nombre or None,
-                    )
-                    for e in eventos
-                ]
-        except Exception as err:
-            messagebox.showerror("Error de base de datos", str(err))
-            self.terminal.log(f"Error BD: {err}", "error")
+        self._player_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = self._player_cap.read()
+        if not ret:
             return
+        self._player_frame = frame_idx
+        c = self.canvas
+        w = max(320, c.winfo_width())
+        h = max(240, c.winfo_height())
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        img.thumbnail((w, h), Image.Resampling.BILINEAR)
+        self._player_photo = ImageTk.PhotoImage(img)
+        c.delete("all")
+        c.create_image(w // 2, h // 2, image=self._player_photo, anchor="center")
+        if self._player_total > 0:
+            self.slider.set((frame_idx / self._player_total) * 100)
 
-        for ev in reversed(datos):
-            self.event_table.insertar(ev)
-        n = len(datos)
-        self.var_estado.set(f"MOSTRANDO {n} EVENTOS DE LA BD")
-        self.terminal.log(f"Cargados {n} eventos desde la base de datos.", "info")
+    def _player_play_pause(self) -> None:
+        if self._player_cap is None:
+            return
+        if self._player_playing:
+            self._player_playing = False
+            self.b_play.configure(text="▶")
+        else:
+            self._player_playing = True
+            self.b_play.configure(text="❚❚")
+            self._player_tick()
+
+    def _player_tick(self) -> None:
+        if not self._player_playing or self._player_cap is None:
+            return
+        self._player_frame += 1
+        if self._player_frame >= self._player_total:
+            self._player_playing = False
+            self.b_play.configure(text="▶")
+            self._player_frame = 0
+            return
+        self._player_mostrar(self._player_frame)
+        self._player_actualizar_tiempo()
+        delay = max(1, int(1000 / self._player_fps))
+        self._player_after = self.after(delay, self._player_tick)
+
+    def _player_stop(self) -> None:
+        self._player_detener()
+        self._player_frame = 0
+        if self._player_cap is not None:
+            self._player_mostrar(0)
+        self._player_actualizar_tiempo()
+
+    def _player_detener(self) -> None:
+        self._player_playing = False
+        if self._player_after is not None:
+            self.after_cancel(self._player_after)
+            self._player_after = None
+        if hasattr(self, "b_play"):
+            self.b_play.configure(text="▶")
+
+    def _player_seek(self, val: str) -> None:
+        if self._player_cap is None or self._player_total == 0:
+            return
+        if self._player_playing:
+            return  # no hacer seek mientras reproduce
+        frame = int(float(val) / 100 * self._player_total)
+        self._player_mostrar(frame)
+        self._player_actualizar_tiempo()
+
+    def _player_actualizar_tiempo(self) -> None:
+        if self._player_cap is None or self._player_fps == 0:
+            self.var_tiempo.set("0:00 / 0:00")
+            return
+        cur = self._player_frame / self._player_fps
+        tot = self._player_total / self._player_fps if self._player_total else 0
+        self.var_tiempo.set(f"{self._fmt(cur)} / {self._fmt(tot)}")
+
+    @staticmethod
+    def _fmt(seg: float) -> str:
+        m = int(seg // 60)
+        s = int(seg % 60)
+        return f"{m}:{s:02d}"
+
+    def _player_limpiar(self) -> None:
+        self._player_playing = False
+        if self._player_cap is not None:
+            self._player_cap.release()
+            self._player_cap = None
+        if hasattr(self, "b_play"):
+            self.b_play.configure(state="disabled", text="▶", bg=T["border"],
+                                   fg=T["text_dim"], activebackground=T["border"])
+            self.b_stop.configure(state="disabled", bg=T["border"],
+                                   fg=T["text_dim"], activebackground=T["border"])
+        self.slider.set(0)
+        self.var_tiempo.set("0:00 / 0:00")
+
+    # ── Cerrar ─────────────────────────────────────────────────────────────────
+
+    def _cerrar(self) -> None:
+        if self._poll_id is not None:
+            self.after_cancel(self._poll_id)
+        self._player_detener()
+        if self._player_cap is not None:
+            self._player_cap.release()
+        if self._gestor is not None:
+            self._gestor.shutdown()
+        self.destroy()
 
 
 def main() -> None:

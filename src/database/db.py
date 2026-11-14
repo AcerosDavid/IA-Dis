@@ -21,7 +21,7 @@ from typing import Generator
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.database.models import Base, Ciclo, Evento, ZonaDB
+from src.database.models import Base, Ciclo, Evento, VideoJob, ZonaDB
 
 
 def _ensure_sqlite_dir(db_url: str) -> None:
@@ -301,3 +301,83 @@ def _segundos_entre(ts_inicio: str, ts_fin: str) -> float:
         return max(0.0, _parse(ts_fin) - _parse(ts_inicio))
     except Exception:
         return 0.0
+
+
+# ── Repositorio de Jobs de análisis batch ──────────────────────────────────────
+
+class RepositorioJobs:
+    """CRUD sobre la tabla 'video_jobs' — trabajos de análisis batch."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def crear(self, datos: dict) -> VideoJob:
+        """Crea un nuevo job y lo persiste. Retorna la instancia."""
+        job = VideoJob(**datos)
+        self.session.add(job)
+        self.session.flush()
+        return job
+
+    def obtener(self, job_id: int) -> VideoJob | None:
+        return self.session.get(VideoJob, job_id)
+
+    def actualizar(self, job_id: int, campos: dict) -> None:
+        """Actualiza campos de un job. No hace commit (lo gestiona la sesión)."""
+        job = self.session.get(VideoJob, job_id)
+        if job is not None:
+            for k, v in campos.items():
+                setattr(job, k, v)
+            self.session.flush()
+
+    def listar_todos(self) -> list[VideoJob]:
+        """Lista todos los jobs ordenados por id descendente (más recientes primero)."""
+        return self.session.query(VideoJob).order_by(VideoJob.id.desc()).all()
+
+    def listar_por_estado(self, estado: str) -> list[VideoJob]:
+        return self.session.query(VideoJob).filter(VideoJob.estado == estado).all()
+
+    def listar_completados(self) -> list[VideoJob]:
+        """Jobs con video procesado disponible para visualizar."""
+        return (
+            self.session.query(VideoJob)
+            .filter(VideoJob.estado == "completado")
+            .order_by(VideoJob.id.desc())
+            .all()
+        )
+
+    def eliminar(self, job_id: int) -> dict:
+        """Elimina un job y sus archivos asociados. Retorna info de lo borrado."""
+        job = self.session.get(VideoJob, job_id)
+        if job is None:
+            return {}
+
+        rutas = {
+            "ruta_original":    job.ruta_original,
+            "ruta_salida":       job.ruta_salida,
+            "ruta_reporte_pdf":  job.ruta_reporte_pdf,
+            "ruta_reporte_xlsx": job.ruta_reporte_xlsx,
+        }
+        info = {
+            "nombre":   job.nombre_original,
+            "estado":    job.estado,
+            "rutas":     {k: v for k, v in rutas.items() if v},
+        }
+        self.session.delete(job)
+        self.session.flush()
+        return info
+
+    def marcar_interrumpidos(self) -> int:
+        """Al arrancar la app, marca como 'error' los jobs que quedaron en procesando."""
+        jobs = (
+            self.session.query(VideoJob)
+            .filter(VideoJob.estado.in_(["pendiente", "procesando", "generando_video"]))
+            .all()
+        )
+        import datetime
+        ahora = datetime.datetime.now().isoformat(timespec="seconds")
+        for job in jobs:
+            job.estado = "error"
+            job.error_msg = "Interrumpido por cierre de la aplicación"
+            job.finalizado_en = ahora
+        self.session.flush()
+        return len(jobs)

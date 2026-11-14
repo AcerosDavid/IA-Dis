@@ -51,6 +51,13 @@ class OpcionesAnalisis:
     track_skip:       int  = 3
     track_imgsz:      int  = 320
     display_width:    int  = 960
+    # Procesamiento offline: escribe el video anotado a disco.
+    exportar_video:   bool = False
+    ruta_salida:      str  = ""
+    # Limite de frames (0 = todo el video; util para pruebas).
+    max_frames:       int  = 0
+    # En modo exportacion solo se refresca la vista previa cada N frames.
+    preview_cada:     int  = 10
 
 
 @dataclass
@@ -62,12 +69,16 @@ class EstadoAnalisis:
     frame_actual: int   = 0
     total_frames: int   = 0
     fps:          float = 0.0
+    fps_video:    float = 0.0
     activos:      int   = 0
     eventos:      int   = 0
     ciclos:       int   = 0
     progreso:     float = 0.0
     mensaje:      str   = "Listo"
     error:        str | None = None
+    archivo_salida: str = ""
+    frames_procesados: int = 0
+    cancelado:    bool  = False
 
 
 @dataclass
@@ -172,6 +183,7 @@ class Procesador(threading.Thread):
     def detener(self) -> None:
         self._detener.set()
         self._pausado.clear()
+        self.estado.cancelado = True
 
     @property
     def terminado(self) -> bool:
@@ -191,18 +203,47 @@ class Procesador(threading.Thread):
         self.estado.ejecutando = True
         self.estado.mensaje = "Iniciando..."
         cap = None
+        writer = None
         try:
             migrate()
             cap = self._abrir_fuente()
             fps_video = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            if fps_video <= 0 or fps_video != fps_video:  # 0, negativo o NaN
+                fps_video = 30.0
+            self.estado.fps_video = fps_video
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
             self.estado.total_frames = total
 
+            if not self._es_camara and total == 1:
+                print(
+                    "[WARN] El video de entrada tiene 1 solo frame. "
+                    "Verifica que sea el archivo correcto (no un fragmento)."
+                )
+
+            tam_salida = (0, 0)
+            if self.opciones.exportar_video and not self._es_camara:
+                ruta_salida = self.opciones.ruta_salida or self._ruta_salida_por_defecto()
+                if os.path.normcase(os.path.abspath(ruta_salida)) == os.path.normcase(
+                    os.path.abspath(str(self.fuente))
+                ):
+                    raise ValueError(
+                        "La ruta de salida es el mismo archivo de entrada. "
+                        "Elige otro nombre para no sobrescribir el video original."
+                    )
+                writer, tam_salida = self._crear_writer(cap, ruta_salida, fps_video)
+                self.estado.archivo_salida = os.path.abspath(ruta_salida)
+
             self.estado.mensaje = "Cargando modelo YOLO..."
-            detector = Detector(self.config.model_path, self.config.confidence_threshold)
+            detector = Detector(
+                self.config.model_path,
+                self.config.confidence_threshold,
+                forzar_cpu=self.config.forzar_cpu,
+            )
             detector.load_model()
 
-            self.estado.mensaje = "Procesando..."
+            self.estado.mensaje = (
+                "Procesando y exportando..." if writer is not None else "Procesando..."
+            )
             with get_session() as session:
                 if self.opciones.guardar_db:
                     repo        = RepositorioEventos(session)
@@ -230,7 +271,7 @@ class Procesador(threading.Thread):
                 self._loop(
                     cap, fps_video, total, detector, gestor, gestor_geo,
                     repo, repo_ciclos, lector_ocr, clasificador, clf_lstm,
-                    session,
+                    session, writer, tam_salida,
                 )
 
         except Exception as e:
@@ -238,6 +279,8 @@ class Procesador(threading.Thread):
             self.estado.mensaje = f"Error: {e}"
             print(f"[PROCESADOR ERROR] {e}")
         finally:
+            if writer is not None:
+                writer.release()
             if cap is not None:
                 cap.release()
             self.estado.ejecutando = False
@@ -261,6 +304,8 @@ class Procesador(threading.Thread):
         clasificador: ClasificadorEstado | None,
         clf_lstm: ClasificadorLSTM | None,
         session,
+        writer=None,
+        tam_salida: tuple[int, int] = (0, 0),
     ) -> None:
         frame_idx     = 0
         ultimas_dets: list[dict] = []
@@ -280,6 +325,9 @@ class Procesador(threading.Thread):
                 if self._es_camara:
                     time.sleep(0.05)
                     continue
+                break
+
+            if self.opciones.max_frames and frame_idx >= self.opciones.max_frames:
                 break
 
             timestamp = calcular_timestamp(fps_video, frame_idx)
@@ -328,22 +376,41 @@ class Procesador(threading.Thread):
                     frames_fps = 0
                     t_fps = time.perf_counter()
 
-            # ── Anotar y publicar ─────────────────────────────────────────────
-            frame_vis = frame.copy()
-            dibujar_zonas(frame_vis, gestor_geo)
-            dibujar_tracking(frame_vis, ultimas_dets, numeros, estados)
+            # ── Anotar (una sola vez, in-place) ────────────────────────────────
+            dibujar_zonas(frame, gestor_geo)
+            dibujar_tracking(frame, ultimas_dets, numeros, estados)
             if numeros:
-                dibujar_panel_flota(frame_vis, numeros)
+                dibujar_panel_flota(frame, numeros)
 
             ts_disp = calcular_timestamp(fps_video, frame_idx)
             hud = (
                 f"{ts_disp} | activos={gestor.n_activos} "
                 f"| eventos={self.estado.eventos} | {self.estado.fps:.0f} fps"
             )
-            dibujar_hud(frame_vis, hud, pausado=self.estado.pausado)
+            dibujar_hud(frame, hud, pausado=self.estado.pausado)
 
-            frame_vis = escalar_frame(frame_vis, self.opciones.display_width)
-            self._publicar_frame(frame_vis)
+            # ── Exportar fotograma anotado a disco ────────────────────────────
+            if writer is not None:
+                frame_out = frame
+                if tam_salida != (0, 0) and (
+                    frame.shape[1] != tam_salida[0]
+                    or frame.shape[0] != tam_salida[1]
+                ):
+                    frame_out = cv2.resize(frame, tam_salida)
+                writer.write(frame_out)
+
+            # ── Vista previa en la UI ─────────────────────────────────────────
+            # En modo background (display_width=0) NO se publica ningún frame:
+            # el análisis corre en segundo plano y lo más rápido posible, sin
+            # competir con la inferencia ni escalar imágenes para la UI.
+            if self.opciones.display_width > 0:
+                preview_cada = (
+                    max(1, self.opciones.preview_cada) if writer is not None else 1
+                )
+                if frame_idx % preview_cada == 0:
+                    self._publicar_frame(
+                        escalar_frame(frame, self.opciones.display_width)
+                    )
 
             self.estado.frame_actual = frame_idx
             self.estado.activos = gestor.n_activos
@@ -351,6 +418,7 @@ class Procesador(threading.Thread):
                 self.estado.progreso = min(100.0, (frame_idx + 1) / total_frames * 100)
 
             frame_idx += 1
+            self.estado.frames_procesados = frame_idx
             if session is not None and frame_idx % max(1, self.config.flush_every_frames) == 0:
                 try:
                     session.commit()
@@ -398,6 +466,47 @@ class Procesador(threading.Thread):
         if not cap.isOpened():
             raise RuntimeError(f"No se pudo abrir la fuente: {self.fuente}")
         return cap
+
+    def _ruta_salida_por_defecto(self) -> str:
+        """Genera data/output/<nombre>_anotado.mp4 si no se indico una ruta."""
+        nombre = os.path.splitext(os.path.basename(str(self.fuente)))[0] or "video"
+        carpeta = os.path.join("data", "output")
+        os.makedirs(carpeta, exist_ok=True)
+        return os.path.join(carpeta, f"{nombre}_anotado.mp4")
+
+    @staticmethod
+    def _crear_writer(cap, ruta: str, fps: float):
+        """
+        Crea el VideoWriter probando codecs compatibles (MPEG-4, H.264, XVID).
+
+        Devuelve (writer, (ancho, alto)). Ajusta las dimensiones a numeros
+        pares porque varios codecs fallan con tamanos impares.
+        """
+        ancho = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
+        alto = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+        ancho -= ancho % 2
+        alto -= alto % 2
+        fps_salida = float(fps) if fps and fps > 0 else 30.0
+
+        os.makedirs(os.path.dirname(os.path.abspath(ruta)), exist_ok=True)
+
+        extension = os.path.splitext(ruta)[1].lower()
+        # mp4v (MPEG-4) viene incluido en FFmpeg/OpenCV; avc1 exige OpenH264
+        # (ausente en muchas instalaciones de Windows). Se prueba mp4v primero.
+        codificadores = ("MJPG",) if extension == ".avi" else ("mp4v", "avc1", "XVID")
+
+        for codec in codificadores:
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            writer = cv2.VideoWriter(ruta, fourcc, fps_salida, (ancho, alto))
+            if writer.isOpened():
+                print(f"[INFO] Exportando con codec {codec} -> {ruta}")
+                return writer, (ancho, alto)
+            writer.release()
+
+        raise RuntimeError(
+            f"No se pudo crear el video de salida: {ruta} "
+            "(prueba con extension .mp4 o .avi)"
+        )
 
     def _cargar_zonas(self, session) -> GestorGeofencing:
         gestor_geo = GestorGeofencing()
