@@ -49,7 +49,7 @@ def auditar_modelo():
         print(f"  ⚠️  YOLO11n con {params_total:,} params está en su límite de capacidad.")
         print(f"  → Con 22k+ imágenes variadas, YOLO11s daría +5-8% mAP50.")
         print(f"  → Pero requiere GPU para entrenamiento razonable (>8GB VRAM).")
-        print(f"  → En T4 de Colab: YOLO11s tarda ~6-8h vs 3-4h del nano.")
+        print(f"  → En GPU dedicada: YOLO11s tarda ~6-8h vs 3-4h del nano.")
 
 
 # ── 2. Distribución de clases ─────────────────────────────────────────────────
